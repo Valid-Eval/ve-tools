@@ -20,12 +20,15 @@ def gen_auth(username, token):
   auth = "%s:%s\n" % (username, token)
   return sh.base64(_in=auth).strip()
 
+def get_token():
+  return input("password: ")
+
 @click.command()
 @click.argument('registry')
 @click.argument('username')
-@click.argument('token')
 @click.argument('email')
-def main(registry, username, token, email):
+def main(registry, username, email):
+  token = get_token()
   auth = gen_auth(username, token)
   json = gen_json(registry, username, token, email, auth)
   print(sh.base64(_in="%s\n" % json))
