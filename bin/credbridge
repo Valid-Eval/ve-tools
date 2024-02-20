@@ -1,0 +1,114 @@
+#!/usr/bin/env python
+import argparse
+import os
+import sys
+import json
+import subprocess
+
+def get_key(config, creds):
+  ak = None
+  sk = None
+  for access, secret in creds:
+    if access.endswith(config['access_key']['post']):
+      if secret.endswith(config['secret_key']['post']):
+        if ak:
+          assert False, "More than one key use the same postfixes"
+        ak = access
+        sk = secret
+  assert ak and sk, "Keys not found"
+  return ak, sk
+
+
+def get_creds_file():
+  def _get_key_from_line(line):
+    parts = line.split("=")
+    assert len(parts) == 2, "Format for aws credentials is unexpected"
+    key = parts[1].strip()
+    if key.startswith("'" or key.startswith('"')):
+      key = key[1:].strip()
+    if key.endswith("'" or key.endswith('"')):
+      key = key[:-1].strip()
+    return key
+
+  path = "~/.aws/credentials"
+  with open(os.path.expanduser(path)) as f:
+    lines = f.read().splitlines()
+  creds = []
+  access_key = None
+  secret_key = None
+  for line in lines:
+    if "#" in line:
+      line = line.split("#")[0].strip()
+    if "[" in line:
+      if access_key == None and secret_key == None:
+        continue
+      else:
+        creds.append((access_key, secret_key))
+        access_key = None
+        secret_key = None
+    else:
+      if line.startswith("aws_access_key_id"):
+        access_key = _get_key_from_line(line)
+      elif line.startswith("aws_secret_access_key"):
+        secret_key = _get_key_from_line(line)
+  if access_key and secret_key:
+    creds.append((access_key, secret_key))
+  return creds
+
+def get_creds_cache():
+  path = "~/.aws/cli/cache"
+  creds = []
+  for filename in os.listdir(os.path.expanduser(path)):
+   with open(os.path.join(os.path.expanduser(path), filename), 'r') as f:
+     data = json.load(f)
+     creds.append((
+       data['Credentials']['AccessKeyId'],
+       data['Credentials']['SecretAccessKey']))
+  return creds
+
+def get_configuration():
+  def _get_key_post(line):
+    parts = line.split()
+    assert len(parts) == 3, "Format from aws configure list is unexpected"
+    key = parts[1].replace("*", "")
+    method = parts[2]
+    return {'post': key, 'method': method}
+  
+  command = "aws configure list"
+  process = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
+  output, error = process.communicate()
+  lines = str(output.decode("utf-8")).split("\n")
+  access_key = None
+  secret_key = None
+  for line in lines:
+    if "access_key" in line:
+      access_key = _get_key_post(line)
+    elif "secret_key" in line:
+      secret_key = _get_key_post(line)
+    elif "Error" in line:
+      assert False, line
+  return {
+    'access_key': access_key,
+    'secret_key': secret_key
+  }
+
+def main():
+  parser = argparse.ArgumentParser(
+    prog='credbridge',
+    description='Returns the current aws access or secret key for your current profile')
+  parser.add_argument('keytype', choices=["access", "secret"])
+  args = parser.parse_args()
+  try:
+    config = get_configuration()
+    creds = get_creds_cache()
+    creds.extend(get_creds_file())
+    keys = get_key(config, creds)
+    if args.keytype == "access":
+      print(keys[0])
+    else:
+      print(keys[1])
+  except:
+    sys.exit(1)
+
+if __name__ == "__main__":
+  main()
