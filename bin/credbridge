@@ -6,17 +6,17 @@ import json
 import subprocess
 
 def get_key(config, creds):
-  ak = None
-  sk = None
-  for access, secret in creds:
+  cred = None
+  for c in creds:
+    access = c[0]
+    secret = c[1]
     if access.endswith(config['access_key']['post']):
       if secret.endswith(config['secret_key']['post']):
-        if ak:
+        if cred:
           assert False, "More than one key use the same postfixes"
-        ak = access
-        sk = secret
-  assert ak and sk, "Keys not found"
-  return ak, sk
+        cred = c
+  assert cred, "Keys not found"
+  return cred
 
 
 def get_creds_file():
@@ -31,6 +31,8 @@ def get_creds_file():
     return key
 
   path = "~/.aws/credentials"
+  if not os.path.exists(os.path.expanduser(path)):
+    return []
   with open(os.path.expanduser(path)) as f:
     lines = f.read().splitlines()
   creds = []
@@ -63,7 +65,9 @@ def get_creds_cache():
      data = json.load(f)
      creds.append((
        data['Credentials']['AccessKeyId'],
-       data['Credentials']['SecretAccessKey']))
+       data['Credentials']['SecretAccessKey'],
+       data['Credentials']['SessionToken'],
+       data['Credentials']['Expiration']))
   return creds
 
 def get_configuration():
@@ -95,8 +99,8 @@ def get_configuration():
 def main():
   parser = argparse.ArgumentParser(
     prog='credbridge',
-    description='Returns the current aws access or secret key for your current profile')
-  parser.add_argument('keytype', choices=["access", "secret"])
+    description='Returns the current aws access, secret key, security token or expires for your current profile')
+  parser.add_argument('keytype', choices=["access", "secret", "token", "expires"])
   args = parser.parse_args()
   try:
     config = get_configuration()
@@ -105,9 +109,18 @@ def main():
     keys = get_key(config, creds)
     if args.keytype == "access":
       print(keys[0])
-    else:
+    elif args.keytype == "secret":
       print(keys[1])
-  except:
+    elif args.keytype == "token":
+      if len(keys) < 3:
+        assert False, "static credentials don't have a token"
+      print(keys[2])
+    elif args.keytype == "expires":
+      if len(keys) < 3:
+        assert False, "static credentials don't have a token"
+      print(keys[3])
+  except Exception as e:
+    print(e)
     sys.exit(1)
 
 if __name__ == "__main__":
