@@ -45,6 +45,18 @@ func getKeys(keytype *string, debug *bool) {
 		}
 		expires := creds.Expires
 		fmt.Println(expires.Format("2006-01-02T15:04:05Z"))
+	default:
+		fmt.Printf("export AWS_ACCESS_KEY_ID=\"%s\"\n", creds.AccessKeyID)
+		fmt.Printf("export S3_KEY=\"%s\"\n", creds.AccessKeyID)
+		fmt.Printf("export AWS_SECRET_ACCESS_KEY=\"%s\"\n", creds.SecretAccessKey)
+		fmt.Printf("export S3_SECRET=\"%s\"\n", creds.SecretAccessKey)
+		if creds.Source == "SSOProvider" {
+			fmt.Printf("export AWS_SESSION_TOKEN=\"%s\"\n", creds.SessionToken)
+			fmt.Printf("export S3_SESSION=\"%s\"\n", creds.SessionToken)
+			expires := creds.Expires
+			fmt.Printf("export AWS_CREDENTIAL_EXPIRATION=\"%s\"\n", expires.Format("2006-01-02T15:04:05Z"))
+			fmt.Printf("export S3_EXPIRATION=\"%s\"\n", expires.Format("2006-01-02T15:04:05Z"))
+		}
 	}
 }
 
@@ -59,12 +71,6 @@ func main() {
 		log.Fatal(parser.Usage(err))
 		os.Exit(1)
 	}
-
-	if len(*keytype) == 0 {
-		log.Fatal(parser.Usage(err))
-		os.Exit(1)
-	}
-
 	getKeys(keytype, debug)
 }
 
