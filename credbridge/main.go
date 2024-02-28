@@ -24,54 +24,38 @@ func getCredentials() aws.Credentials {
 	return creds
 }
 
-func getKeys(keytype *string, debug *bool) {
+func getKeys(noexport *bool, debug *bool) {
 	creds := getCredentials()
 	if *debug {
 		fmt.Fprintf(os.Stderr, "%+v\n", creds)
 	}
-	switch *keytype {
-	case "access":
-		fmt.Println(creds.AccessKeyID)
-	case "secret":
-		fmt.Println(creds.SecretAccessKey)
-	case "token":
-		if creds.Source != "SSOProvider" {
-			log.Fatal("Tokens only apply to SSO credentials")
-		}
-		fmt.Println(creds.SessionToken)
-	case "expires":
-		if creds.Source != "SSOProvider" {
-			log.Fatal("Expires only apply to SSO credentials")
-		}
+
+	export := "export "
+	if *noexport {
+		export = ""
+	}
+
+	fmt.Printf("%sAWS_ACCESS_KEY_ID=\"%s\"\n", export, creds.AccessKeyID)
+	fmt.Printf("%sAWS_SECRET_ACCESS_KEY=\"%s\"\n", export, creds.SecretAccessKey)
+	if creds.Source == "SSOProvider" {
+		fmt.Printf("%sAWS_SESSION_TOKEN=\"%s\"\n", export, creds.SessionToken)
 		expires := creds.Expires
-		fmt.Println(expires.Format("2006-01-02T15:04:05Z"))
-	default:
-		fmt.Printf("export AWS_ACCESS_KEY_ID=\"%s\"\n", creds.AccessKeyID)
-		fmt.Printf("export S3_KEY=\"%s\"\n", creds.AccessKeyID)
-		fmt.Printf("export AWS_SECRET_ACCESS_KEY=\"%s\"\n", creds.SecretAccessKey)
-		fmt.Printf("export S3_SECRET=\"%s\"\n", creds.SecretAccessKey)
-		if creds.Source == "SSOProvider" {
-			fmt.Printf("export AWS_SESSION_TOKEN=\"%s\"\n", creds.SessionToken)
-			fmt.Printf("export S3_SESSION=\"%s\"\n", creds.SessionToken)
-			expires := creds.Expires
-			fmt.Printf("export AWS_CREDENTIAL_EXPIRATION=\"%s\"\n", expires.Format("2006-01-02T15:04:05Z"))
-			fmt.Printf("export S3_EXPIRATION=\"%s\"\n", expires.Format("2006-01-02T15:04:05Z"))
-		}
+		fmt.Printf("%sAWS_CREDENTIAL_EXPIRATION=\"%s\"\n", export, expires.Format("2006-01-02T15:04:05Z"))
 	}
 }
 
 func main() {
 	parser := argparse.NewParser(
 		"credbridge",
-		"Returns the current aws access, secret key, session token or expires for your current profile (required)")
-	keytype := parser.SelectorPositional([]string{"access", "secret", "token", "expires"}, &argparse.Options{Help: "Key type to return"})
+		"Returns the current aws access, secret key, session token and expires for your current profile")
+	var noexport *bool = parser.Flag("n", "no-export", &argparse.Options{Default: false})
 	var debug *bool = parser.Flag("d", "debug", nil)
 	err := parser.Parse(os.Args)
 	if err != nil {
 		log.Fatal(parser.Usage(err))
 		os.Exit(1)
 	}
-	getKeys(keytype, debug)
+	getKeys(noexport, debug)
 }
 
 /*
