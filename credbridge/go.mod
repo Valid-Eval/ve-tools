@@ -1,4 +1,4 @@
-module credbridge
+module github.com/Valid-Eval/ve-tools/credbridge
 
 go 1.22.0
 
