@@ -79,3 +79,14 @@ This tool is designed to automate a part of the docker credentials rotation.  Fl
 ```./dockercredrot <registry name> <username> <email>```
 
 This will ask for the password and then returns the base64 string needed for the config.
+
+## credbridge
+
+Credbridge is a go tool that takes can take a users's aws environment, particularly an sso one and exposed the credentials in a container.  This is designed for local dev use, and credbridge should _never_ be used in a production environment.  To use it, you need to export your AWS_PROFILE into your container and also mount your ~/.aws directory to the container's user's home directory.  You can then use this to pass credentials to applications that are sso unaware like this:
+
+```
+export AWS_ACCESS_KEY_ID="$(credbridge access)"
+export AWS_SECRET_ACCESS_KEY="$(credbridge secret)"
+export AWS_SESSION_TOKEN="$(credbridge token)"
+export AWS_CREDENTIAL_EXPIRATION="$(credbridge expires)"
+```
