@@ -24,8 +24,11 @@ func getCredentials() aws.Credentials {
 	return creds
 }
 
-func getKeys(keytype *string) {
+func getKeys(keytype *string, debug *bool) {
 	creds := getCredentials()
+	if *debug {
+		fmt.Fprintf(os.Stderr, "%+v\n", creds)
+	}
 	switch *keytype {
 	case "access":
 		fmt.Println(creds.AccessKeyID)
@@ -50,6 +53,7 @@ func main() {
 		"credbridge",
 		"Returns the current aws access, secret key, session token or expires for your current profile (required)")
 	keytype := parser.SelectorPositional([]string{"access", "secret", "token", "expires"}, &argparse.Options{Help: "Key type to return"})
+	var debug *bool = parser.Flag("d", "debug", nil)
 	err := parser.Parse(os.Args)
 	if err != nil {
 		log.Fatal(parser.Usage(err))
@@ -61,7 +65,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	getKeys(keytype)
+	getKeys(keytype, debug)
 }
 
 /*
