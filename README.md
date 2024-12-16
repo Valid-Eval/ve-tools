@@ -106,7 +106,8 @@ The primary use case
 pyenv virtualenv ve-tools
 pyenv activate ve-tools
 pip install setuptools==66.1.1
-./setup.py install```
+./setup.py install
+```
 
 You can:
 
