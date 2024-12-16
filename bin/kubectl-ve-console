@@ -1,0 +1,50 @@
+#!/usr/bin/env python
+
+import subprocess
+import shlex
+import os
+import sys
+
+import click
+from kubernetes import config
+from kubernetes.client import Configuration
+from kubernetes.client.api import core_v1_api
+from kubernetes.client.rest import ApiException
+from vetools.kubernetes import get_a_pod
+
+def exec_console(v1, context):
+    pod = get_a_pod(v1, context, "valid-eval-backend-admin")
+    if not pod:
+        sys.stderr.write("No pod from valid-eval-backend-admin\n")
+        sys.exit(1)
+    print("Connecting to rails console")
+    run_console(pod)
+
+
+def run_console(pod):
+    cmd = f"kubectl exec {pod.metadata.name} -n {pod.metadata.namespace} -it -- bundle exec dotenv rails c"
+    subprocess.run(shlex.split(cmd),
+        env=os.environ
+    )
+
+
+@click.command()
+@click.option('--namespace','-n', help='Namespace')
+def main(namespace):
+    config.load_kube_config()
+    try:
+        c = Configuration().get_default_copy()
+    except AttributeError:
+        c = Configuration()
+        c.assert_hostname = False
+    Configuration.set_default(c)
+    core_v1 = core_v1_api.CoreV1Api()
+    context = config.list_kube_config_contexts()[1]['context']
+    if namespace:
+        context["namespace"] = namespace
+    exec_console(core_v1, context)
+
+
+if __name__ == '__main__':
+    main()
+

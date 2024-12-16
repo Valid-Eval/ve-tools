@@ -1,0 +1,141 @@
+#!/usr/bin/env python
+import click
+import json
+import sys
+import socket
+from contextlib import closing
+from queue import Queue
+from threading import Thread
+
+from yaml import dump
+try:
+    from yaml import CDumper as Dumper
+except ImportError:
+    from yaml import Dumper
+from tabulate import tabulate
+import pandas as pd
+from rsmq import RedisSMQ
+from kubernetes import config
+from kubernetes.client import Configuration
+from kubernetes.client.api import core_v1_api
+from vetools.kubernetes import get_a_pod, open_port_forward
+from vetools.redis import get_metrics_for_rsmq, get_metrics_for_sidekiq, get_metrics_for_bull
+
+
+
+def get_metrics(redis_host, redis_port):
+    rsmq = RedisSMQ(host=redis_host, port=redis_port)
+    metrics = {}
+    metrics["rsmq"] = get_metrics_for_rsmq(rsmq)
+    metrics["sidekiq"] = get_metrics_for_sidekiq(rsmq.client)
+    metrics["bull"] = get_metrics_for_bull(rsmq.client)
+    return metrics
+
+
+def find_free_port():
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(('', 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
+
+def exec_queue(v1, context, output, verbose):
+    pod = get_a_pod(v1, context, "valid-eval-redis")
+    if not pod:
+        sys.stderr.write(f"No pod from valid-eval-redis in {context['namespace']}\n")
+        sys.exit(1)
+
+    port = find_free_port()
+    to_parent = Queue()
+    to_child = Queue()
+    p = Thread(target=open_port_forward, args=(pod, port, '6379', to_parent, to_child))
+    p.start()
+
+    info = to_parent.get(block=True)
+    if verbose:
+        sys.stderr.write(info)
+    info = to_parent.get(block=True)
+    if verbose:
+        sys.stderr.write(info)
+    metrics = get_metrics("localhost", port)
+    print_metrics(metrics, output)
+    to_child.put("exit\n")
+    p.join()
+
+
+def print_metrics(metrics, output):
+    if output == 'json':
+        print(json.dumps(metrics, indent=2))
+    elif output == 'yaml':
+        print(dump(metrics, indent=2))
+    else:
+        print_table(metrics)        
+
+
+def print_table(metrics):
+    data = []
+    def _print_rsmq(metrics):
+        for key, values in metrics.items():
+            row = [
+                key,
+                "rsmq",
+                values["msgs"],
+                values["hiddenmsgs"],
+                values["totalrecv"],
+                values["totalsent"]
+            ]
+            data.append(row)
+
+    def _print_sidekiq(metrics):
+        for key, values in metrics.items():
+            row = [
+                key,
+                "sidekiq",
+                values["msgs"]
+            ]
+            data.append(row)
+
+    def _print_bull(metrics):
+        for key, values in metrics.items():
+            row = [
+                key,
+                "bull",
+                values["msgs"],
+                None,
+                values["totalrecv"]
+            ]
+            data.append(row)
+    
+    _print_rsmq(metrics['rsmq'])
+    _print_sidekiq(metrics['sidekiq'])
+    _print_bull(metrics['bull'])
+
+    df = pd.DataFrame(data, columns=[
+        "NAME", "QUEUE", "MESSAGES", "HIDDEN MESSAGES", "TOTAL RECIEVED", "TOTAL SENT"
+    ])
+    df = df.astype('object')
+    df.fillna('', inplace=True)
+    print(tabulate(df, headers="keys", tablefmt="plain", showindex=False))
+    print()
+
+
+@click.command()
+@click.option('--namespace','-n', help='Namespace')
+@click.option('--output','-o', default="text", help='Output (one of text, json, yaml)')
+@click.option('--verbose','-v', is_flag=True, default=False, help='Verbose')
+def main(namespace, output, verbose):
+    config.load_kube_config()
+    try:
+        c = Configuration().get_default_copy()
+    except AttributeError:
+        c = Configuration()
+        c.assert_hostname = False
+    Configuration.set_default(c)
+    core_v1 = core_v1_api.CoreV1Api()
+    context = config.list_kube_config_contexts()[1]['context']
+    if namespace:
+        context["namespace"] = namespace
+    exec_queue(core_v1, context, output, verbose)
+
+if __name__ == '__main__':
+    main()

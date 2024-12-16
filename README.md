@@ -90,3 +90,34 @@ export AWS_SECRET_ACCESS_KEY="$(credbridge secret)"
 export AWS_SESSION_TOKEN="$(credbridge token)"
 export AWS_CREDENTIAL_EXPIRATION="$(credbridge expires)"
 ```
+
+you can also execute credbridge like this:
+
+```
+credbridge >> aws.env
+source aws.env
+```
+
+The primary use case 
+
+# Python Kube tools
+
+`pyenv virtualenv ve-tools`
+`pyenv activate ve-tools`
+`pip install setuptools==66.1.1`
+`./setup.py install`
+
+You can:
+
+1) Symlink the binaries to your bin directory
+`ln -s ~/.pyenv/versions/ve-tools/bin/kubectl-ve-queues ~/bin/kubectl-ve-queues`
+`ln -s ~/.pyenv/versions/ve-tools/bin/kubectl-ve-console ~/bin/kubectl-ve-console`
+and add your bin directory to your PATH, but this must be done later in your shell profile than pyenv
+`echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc`
+
+2) Add the ve-tools virtualenv bin to your path
+`export PATH="$HOME/.pyenv/versions/ve-tools/bin:$PATH"`
+
+3) Activate the ve-tools virtualenv in any shell where you want to use these plugins
+
+4) Or instead do the `./setup.py install` in the valid-eval virtualenv (and any others wher you want the tools to work)
