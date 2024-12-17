@@ -3,6 +3,9 @@ import shlex
 import os
 import sys
 import time
+import socket
+from contextlib import closing
+
 from kubernetes.client.rest import ApiException
 
 def get_a_pod(v1, context, pod_name_filter):
@@ -37,3 +40,10 @@ def open_port_forward(pod, from_port, to_port, to_parent, to_child):
                 break
         time.sleep(0.1)
     proc.kill()
+
+
+def find_free_port():
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(('', 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]

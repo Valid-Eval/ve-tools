@@ -1,0 +1,159 @@
+#!/usr/bin/env python
+import click
+import json
+import sys
+import datetime
+from pprint import pprint
+from queue import Queue
+from threading import Thread
+
+from yaml import dump
+try:
+    from yaml import CDumper as Dumper
+except ImportError:
+    from yaml import Dumper
+from rsmq import RedisSMQ
+from kubernetes import config
+from kubernetes.client import Configuration
+from kubernetes.client.api import core_v1_api
+from vetools.kubernetes import get_a_pod, open_port_forward, find_free_port
+from vetools.redis import get_metrics_for_rsmq
+
+
+def get_queue_data(rsmq, queue):
+    redis_time = rsmq.client.time()
+    now = redis_time[0] * 1000 + int(redis_time[1]/1000)
+    messages = rsmq.client.zrangebyscore(f"rsmq:{queue}", 0, now)
+    hidden = rsmq.client.zrangebyscore(f"rsmq:{queue}", now, "+inf")
+    return messages, hidden
+
+
+def get_item(rsmq, queue, item):
+    items = rsmq.client.zrange(f"rsmq:{queue}", 0, -1)
+    if item in items:
+        data = json.loads(rsmq.client.hget(f"rsmq:{queue}:Q", item))
+        rc = rsmq.client.hget(f"rsmq:{queue}:Q", f"{item}:rc")
+        fr = rsmq.client.hget(f"rsmq:{queue}:Q", f"{item}:fr")
+        return {
+            "data": data,
+            "rc": rc,
+            "fr": datetime.datetime.fromtimestamp(int(fr)/1000).strftime('%Y-%m-%d %H:%M:%S')
+        }
+    else:
+        return None
+
+def get_queue(redis_host, redis_port, queue):
+    rsmq = RedisSMQ(host=redis_host, port=redis_port)
+    metrics = get_metrics_for_rsmq(rsmq)
+    messages, hidden = get_queue_data(rsmq, queue)
+    data = {
+        "metrics": metrics,
+        "messages": messages,
+        "hidden": hidden
+    }
+    return data
+
+
+def get_queue_item(redis_host, redis_port, queue, item):
+    rsmq = RedisSMQ(host=redis_host, port=redis_port)
+    data = get_item(rsmq, queue, item)
+    return data
+
+
+def exec_queue_item_read(core_v1, context, queue, item, output, verbose):
+    pod = get_a_pod(core_v1, context, "valid-eval-redis")
+    if not pod:
+        sys.stderr.write(f"No pod from {queue} in {context['namespace']}\n")
+        sys.exit(1)
+    if not pod:
+        sys.stderr.write(f"No pod from valid-eval-redis in {context['namespace']}\n")
+        sys.exit(1)
+
+    port = find_free_port()
+    to_parent = Queue()
+    to_child = Queue()
+    try:
+        p = Thread(target=open_port_forward, args=(pod, port, '6379', to_parent, to_child))
+        p.start()
+
+        info = to_parent.get(block=True)
+        if verbose:
+            sys.stderr.write(info)
+        info = to_parent.get(block=True)
+        if verbose:
+            sys.stderr.write(info)
+        data = get_queue_item("localhost", port, queue, item)
+        if output == 'json':
+            print(json.dumps(data, indent=2))
+        elif output == 'yaml':
+            print(dump(data, indent=2, Dumper=Dumper))
+        else:
+            pprint(data)
+
+        to_child.put("exit\n")
+    finally:
+        p.join()
+
+def exec_queue_read(core_v1, context, queue, output, verbose):
+    pod = get_a_pod(core_v1, context, "valid-eval-redis")
+    if not pod:
+        sys.stderr.write(f"No pod from {queue} in {context['namespace']}\n")
+        sys.exit(1)
+    if not pod:
+        sys.stderr.write(f"No pod from valid-eval-redis in {context['namespace']}\n")
+        sys.exit(1)
+
+    port = find_free_port()
+    to_parent = Queue()
+    to_child = Queue()
+    try:
+        p = Thread(target=open_port_forward, args=(pod, port, '6379', to_parent, to_child))
+        p.start()
+
+        info = to_parent.get(block=True)
+        if verbose:
+            sys.stderr.write(info)
+        info = to_parent.get(block=True)
+        if verbose:
+            sys.stderr.write(info)
+        data = get_queue("localhost", port, queue)
+        if output == 'json':
+            print(json.dumps(data, indent=2))
+        elif output == 'yaml':
+            print(dump(data, indent=2, Dumper=Dumper))
+        else:
+            pprint(data)
+        to_child.put("exit\n")
+    finally:
+        p.join()
+
+
+@click.command()
+@click.argument('queue')
+@click.argument('item', required=False)
+@click.option('--namespace','-n', help='Namespace')
+@click.option('--output','-o', default="text", help='Output (one of text, json, yaml)')
+@click.option('--verbose','-v', is_flag=True, default=False, help='Verbose')
+def main(queue, item, namespace, output, verbose):
+    config.load_kube_config()
+    try:
+        c = Configuration().get_default_copy()
+    except AttributeError:
+        c = Configuration()
+        c.assert_hostname = False
+    Configuration.set_default(c)
+    core_v1 = core_v1_api.CoreV1Api()
+    context = config.list_kube_config_contexts()[1]['context']
+    if namespace:
+        context["namespace"] = namespace
+    if item:
+        exec_queue_item_read(core_v1, context, queue, item, output, verbose)
+    else: 
+        exec_queue_read(core_v1, context, queue, output, verbose)
+
+if __name__ == '__main__':
+    main()
+
+# 'rsmq:valid-score-calcs',
+# 'rsmq:valid-score-calcs:Q',
+# redis.zrange('rsmq:valid-score-calcs', 0, -1)

@@ -2,8 +2,6 @@
 import click
 import json
 import sys
-import socket
-from contextlib import closing
 from queue import Queue
 from threading import Thread
 
@@ -18,7 +16,7 @@ from rsmq import RedisSMQ
 from kubernetes import config
 from kubernetes.client import Configuration
 from kubernetes.client.api import core_v1_api
-from vetools.kubernetes import get_a_pod, open_port_forward
+from vetools.kubernetes import get_a_pod, open_port_forward, find_free_port
 from vetools.redis import get_metrics_for_rsmq, get_metrics_for_sidekiq, get_metrics_for_bull
 
 
@@ -32,13 +30,6 @@ def get_metrics(redis_host, redis_port):
     return metrics
 
 
-def find_free_port():
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(('', 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
-
-
 def exec_queue(v1, context, output, verbose):
     pod = get_a_pod(v1, context, "valid-eval-redis")
     if not pod:
@@ -48,26 +39,28 @@ def exec_queue(v1, context, output, verbose):
     port = find_free_port()
     to_parent = Queue()
     to_child = Queue()
-    p = Thread(target=open_port_forward, args=(pod, port, '6379', to_parent, to_child))
-    p.start()
+    try:
+        p = Thread(target=open_port_forward, args=(pod, port, '6379', to_parent, to_child))
+        p.start()
 
-    info = to_parent.get(block=True)
-    if verbose:
-        sys.stderr.write(info)
-    info = to_parent.get(block=True)
-    if verbose:
-        sys.stderr.write(info)
-    metrics = get_metrics("localhost", port)
-    print_metrics(metrics, output)
-    to_child.put("exit\n")
-    p.join()
+        info = to_parent.get(block=True)
+        if verbose:
+            sys.stderr.write(info)
+        info = to_parent.get(block=True)
+        if verbose:
+            sys.stderr.write(info)
+        metrics = get_metrics("localhost", port)
+        print_metrics(metrics, output)
+        to_child.put("exit\n")
+    finally:
+        p.join()
 
 
 def print_metrics(metrics, output):
     if output == 'json':
         print(json.dumps(metrics, indent=2))
     elif output == 'yaml':
-        print(dump(metrics, indent=2))
+        print(dump(metrics, indent=2, Dumper=Dumper))
     else:
         print_table(metrics)        
 

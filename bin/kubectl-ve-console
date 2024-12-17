@@ -9,7 +9,6 @@ import click
 from kubernetes import config
 from kubernetes.client import Configuration
 from kubernetes.client.api import core_v1_api
-from kubernetes.client.rest import ApiException
 from vetools.kubernetes import get_a_pod
 
 def exec_console(v1, context):

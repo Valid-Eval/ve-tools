@@ -12,5 +12,9 @@ with open("requirements.txt") as f:
 setup(
     install_requires=required,
     packages=find_packages(include=['vetools', 'vetools.*']),
-    scripts=["bin/kubectl-ve-queues", "bin/kubectl-ve-console"],
+    scripts=[
+        "bin/kubectl-ve-queues",
+        "bin/kubectl-ve-queue",
+        "bin/kubectl-ve-console"
+    ],
 )
