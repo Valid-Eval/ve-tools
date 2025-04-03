@@ -34,10 +34,13 @@ def get_item(rsmq, queue, item):
         data = json.loads(rsmq.client.hget(f"rsmq:{queue}:Q", item))
         rc = rsmq.client.hget(f"rsmq:{queue}:Q", f"{item}:rc")
         fr = rsmq.client.hget(f"rsmq:{queue}:Q", f"{item}:fr")
+        fr_value = None
+        if fr:
+            fr_value = datetime.datetime.fromtimestamp(int(fr)/1000).strftime('%Y-%m-%d %H:%M:%S')
         return {
             "data": data,
             "rc": rc,
-            "fr": datetime.datetime.fromtimestamp(int(fr)/1000).strftime('%Y-%m-%d %H:%M:%S')
+            "fr": fr_value
         }
     else:
         return None
@@ -75,7 +78,6 @@ def exec_queue_item_read(core_v1, context, queue, item, output, verbose):
     try:
         p = Thread(target=open_port_forward, args=(pod, port, '6379', to_parent, to_child))
         p.start()
-
         info = to_parent.get(block=True)
         if verbose:
             sys.stderr.write(info)
@@ -109,7 +111,6 @@ def exec_queue_read(core_v1, context, queue, output, verbose):
     try:
         p = Thread(target=open_port_forward, args=(pod, port, '6379', to_parent, to_child))
         p.start()
-
         info = to_parent.get(block=True)
         if verbose:
             sys.stderr.write(info)

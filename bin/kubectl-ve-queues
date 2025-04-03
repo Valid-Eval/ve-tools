@@ -20,7 +20,6 @@ from vetools.kubernetes import get_a_pod, open_port_forward, find_free_port
 from vetools.redis import get_metrics_for_rsmq, get_metrics_for_sidekiq, get_metrics_for_bull
 
 
-
 def get_metrics(redis_host, redis_port):
     rsmq = RedisSMQ(host=redis_host, port=redis_port)
     metrics = {}
@@ -68,6 +67,8 @@ def print_metrics(metrics, output):
 def print_table(metrics):
     data = []
     def _print_rsmq(metrics):
+        total_msgs = 0
+        newdata = []
         for key, values in metrics.items():
             row = [
                 key,
@@ -77,18 +78,47 @@ def print_table(metrics):
                 values["totalrecv"],
                 values["totalsent"]
             ]
-            data.append(row)
+            newdata.append(row)
+            total_msgs += values["msgs"]
+        newdata.sort(key=lambda x: x[0])
+        data.extend(newdata)
+        data.append([
+            ".    RSMQ Total",
+            "rsmq",
+            total_msgs,
+            None,
+            None,
+            None
+        ])
+        data.append([])
+        return total_msgs
 
     def _print_sidekiq(metrics):
+        total_msgs = 0
+        newdata = []
         for key, values in metrics.items():
             row = [
                 key,
                 "sidekiq",
                 values["msgs"]
             ]
-            data.append(row)
+            newdata.append(row)
+            total_msgs += values["msgs"]
+        newdata.sort(key=lambda x: x[0])
+        data.extend(newdata)
+        data.append([
+            ".    Sidekiq Total",
+            "sidekiq",
+            total_msgs,
+            None,
+            None
+        ])
+        data.append([])
+        return total_msgs
 
     def _print_bull(metrics):
+        total_msgs = 0
+        newdata = []
         for key, values in metrics.items():
             row = [
                 key,
@@ -97,11 +127,30 @@ def print_table(metrics):
                 None,
                 values["totalrecv"]
             ]
-            data.append(row)
-    
-    _print_rsmq(metrics['rsmq'])
-    _print_sidekiq(metrics['sidekiq'])
-    _print_bull(metrics['bull'])
+            newdata.append(row)
+            total_msgs += values["msgs"]
+        newdata.sort(key=lambda x: x[0])
+        data.extend(newdata)
+        data.append([
+            ".    Bull Total",
+            "bull",
+            total_msgs,
+            None,
+            None
+        ])
+        data.append([])
+        return total_msgs
+
+    total_msgs = _print_rsmq(metrics['rsmq'])
+    total_msgs += _print_sidekiq(metrics['sidekiq'])
+    total_msgs += _print_bull(metrics['bull'])
+    data.append([
+        ".    Total",
+        None,
+        total_msgs,
+        None,
+        None
+    ])
 
     df = pd.DataFrame(data, columns=[
         "NAME", "QUEUE", "MESSAGES", "HIDDEN MESSAGES", "TOTAL RECIEVED", "TOTAL SENT"
