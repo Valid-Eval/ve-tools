@@ -35,3 +35,24 @@
     Revisit if stakeholders consistently struggle with GitHub-based review, or if
     FedRAMP 20x introduces documentation format requirements that favor a different
     platform.
+
+- id: ARCH-002
+  date: 2026-03-16
+  decision: "PENDING — Skill architecture: how /compliance relates to existing supply-chain-assessment skill"
+  description: >
+    Open design question. The existing supply-chain-assessment skill (PR #6, merged
+    2026-02-19 in valid-eval-skills) handles app-layer dependency analysis with
+    interactive disposition review. The new /compliance skill covers the broader
+    compliance operating system. Need to resolve:
+    (a) Should supply-chain-assessment be absorbed into /compliance?
+    (b) Are there distinct skills at different abstraction layers (e.g., a detail-level
+        scanner skill vs. an executive-level compliance skill)?
+    (c) How do skills compose — does /compliance invoke supply-chain-assessment
+        internally, or do they share data but run independently?
+    (d) What's the right skill boundary for maintainability and usability?
+  rationale: null
+  alternatives_considered: null
+  decided_by: null
+  review_trigger: >
+    Resolve before building /compliance skill. Does not block the ve-tools data
+    foundation or documentation work.
