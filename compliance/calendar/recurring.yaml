@@ -194,6 +194,78 @@ annually:
     assessor_scrutiny: low
     notes: "Current vendors: AWS, GitHub, Defense Unicorns, Rule4, InfusionPoints."
 
+# Commitments discovered during comprehensive SSP review (2026-03-16):
+
+  - name: Audit Log Review
+    description: >
+      Review audit logs for inappropriate or unusual activity per AU-6.
+      Automated alerts reviewed daily; manual review at stated cadence.
+    source: SSP Appendix A AU-6
+    due_day: weekly
+    owner: jacob
+    assessor_scrutiny: high
+    notes: "AU-6 commits to weekly review. Common assessment failure. InfusionPoints SOC should take this over."
+
+  - name: CAB/Change Review Meeting
+    description: >
+      Change Authorization Board meets to review proposed configuration changes.
+    source: SSP Appendix A CM-3(g)
+    due_day: weekly
+    owner: jacob
+    assessor_scrutiny: medium
+    notes: "Currently CTO + CEO. Review queued Jira tickets and PRs."
+
+  - name: Traffic Flow Policy Exception Review
+    description: >
+      Review exceptions to traffic flow policy (security group rules, network policies).
+    source: SSP Appendix A SC-7(4)(e)
+    due: every_180_days
+    owner: jacob
+    assessor_scrutiny: medium
+
+  - name: Privileged Access Quarterly Review (CM-5(5))
+    description: >
+      Review and reevaluate privileges for production change access.
+    source: SSP Appendix A CM-5(5)(b)
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: high
+    notes: "In addition to AC-2(j) access review. Focuses specifically on change/deploy privileges."
+
+  - name: Authorized Software List Review
+    description: >
+      Review and update list of approved/disapproved software (VE-CM-INV-3).
+    source: SSP Appendix A CM-7(5)(c)
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: medium
+
+  - name: CUI Storage Location Review
+    description: >
+      Review IL2 environment for CUI storage locations per VE-CM-SOP-6.
+    source: SSP Appendix A CM-12
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: medium
+
+  - name: Publicly Accessible Content Review
+    description: >
+      Review publicly accessible content for nonpublic information.
+      Review list of individuals authorized to post public content.
+    source: SSP Appendix A AC-22
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: medium
+
+  - name: Alternate Work Site Controls Assessment
+    description: >
+      Assess effectiveness of remote work controls (device compliance,
+      VPN/SSM logs, MFA enforcement).
+    source: SSP Appendix A PE-17(c)
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: medium
+
 # Weekly operational cadence (not compliance deliverables — keeps the machine running)
 weekly:
   - name: Vulnerability Triage Session
