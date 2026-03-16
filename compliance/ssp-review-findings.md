@@ -316,17 +316,119 @@ generate and maintain POA&M entries from vulnerability finding dispositions.
 
 ---
 
+## F-13: SBOM Per-PR Diff Alerting Claim May Overstate Implementation
+
+**Severity**: MEDIUM — supply chain controls are an increasing focus area
+
+**Finding**: SSP Appendix A, SR-11 implementation (Part a) states: "Software Bill of
+Materials (SBOM) creation on each pull request that includes hash digests for software
+dependencies with automated comparison with the last known SBOM to identify and alert
+on changes."
+
+Actual implementation: ve-zarf generates SBOMs during the GitHub Actions bundle build
+process. This satisfies SBOM generation. However, the "automated comparison with the
+last known SBOM to identify and alert on changes" part describes a specific per-PR diff
+and alerting capability that may not be fully implemented as described.
+
+**Risk**: If an assessor asks to see the SBOM diff alerting in action, and it doesn't
+exist as described, this would be a partial implementation rather than "Implemented" as
+marked. SR-3 is marked ☒ Implemented.
+
+**Recommendation**: Verify whether the per-PR SBOM comparison and alerting is actually
+implemented. If not, either implement it (GitHub Actions can do this with tools like
+`anchore/sbom-action` or `CycloneDX` diff) or adjust the SSP language to accurately
+describe what IS implemented (SBOM generation during bundle builds + Dependabot for
+dependency change alerting).
+
+**Documents involved**:
+- SSP Appendix A, SR-11 Part a implementation (line ~32296)
+- SSP Appendix A, SR-3 Part b implementation
+
+---
+
+## F-14: Separation of Duties Table Lists 10 Roles for <20 Person Company
+
+**Severity**: LOW — not inherently wrong, but an assessor may probe
+
+**Finding**: Table 11.1 (Separation of Duties) defines 10 distinct roles: Information
+Owner, Security Officer, Privacy Officer, Cloud Admin, System Admin, Network Admin,
+Application Admin, Software Engineer, QA Engineer, DevOps, Security Team.
+
+For a company with fewer than 20 employees, several of these roles are necessarily filled
+by the same individuals. The SSP should clearly document the role-to-person mapping and
+explain how separation of duties is maintained when one person holds multiple roles.
+
+**Risk**: An assessor will ask "who fills the Security Officer role?" and "who fills the
+Cloud Admin role?" If the answer is the same person (or a small overlap), they'll want
+to see compensating controls for the lack of separation. This is expected and normal for
+small companies but needs to be explicitly addressed.
+
+**Recommendation**: Add a role-to-person mapping to the SSP or a supporting document that
+shows which individuals hold which roles. Document any cases where one person holds
+multiple roles and the compensating controls in place (e.g., audit logging, peer review
+requirements, approval workflows).
+
+**Documents involved**:
+- SSP Table 11.1 (Separation of Duties)
+
+---
+
+## F-15: SSP Claims "Threat Intelligence Feed Monitoring" — Verify Implementation
+
+**Severity**: LOW — but claims should match reality
+
+**Finding**: SR-3 Part b states VE is "actively monitoring threat intelligence feeds for
+Valid Eval system components" and "passive monitoring of security advisories received via
+email by vendors and maintainers." The CA-7 implementation also references comprehensive
+threat detection.
+
+The actual mechanism for threat intelligence appears to be: CISA advisories (not
+systematically monitored — see F-4), Dependabot alerts (automated), and vendor emails
+(ad-hoc). There is no dedicated threat intelligence feed subscription or monitoring tool.
+
+**Risk**: LOW. "Passive monitoring of security advisories via email" is accurate and
+defensible. The "actively monitoring threat intelligence feeds" claim is stronger and
+may not be fully substantiated. InfusionPoints SOC may cover this once operational.
+
+**Recommendation**: Once InfusionPoints is operational, update SR-3 to reference their
+threat intelligence capabilities. In the interim, ensure the language matches actual
+practice — "monitoring CISA advisories and vendor security notifications" is accurate
+and sufficient.
+
+**Documents involved**:
+- SSP Appendix A, SR-3 Part b implementation
+- SSP Appendix A, CA-7 implementation
+
+---
+
+## Controls Reviewed Without Findings
+
+The following controls were reviewed and found to be consistent, accurately described,
+and without material issues:
+
+- **AC-2 (Account Management)**: Comprehensive, accurately describes AWS IAM Identity
+  Center, application roles (Organizer/Judge/Navigator/Team/Admin/SuperAdmin), and
+  Keycloak. Quarterly privileged / annual non-privileged review cadence matches calendar.
+- **AT-2 (Security Awareness Training)**: Describes module-based online training, phishing
+  campaigns, tabletop exercises. Cadence: initial hire + annual. Appropriate for FedRAMP Moderate.
+- **CP-4 (Contingency Plan Testing)**: Describes walkthrough, tabletop, standalone, and
+  partial integration test types. Annual cadence. Consistent with ConMon plan.
+- **IR-4 (Incident Handling)**: Well-structured NIMS-aligned ICS model. Post-mortem process
+  described. Consistent with IR plan reference.
+- **CM-8 (System Component Inventory)**: Uses AWS Systems Manager + package manager files.
+  Monthly review cadence. Detailed field requirements. Consistent with ConMon deliverables.
+
+---
+
 ## Future Findings
 
 Additional findings will be added as more SSP content and supporting documents are
 reviewed. Areas still to examine include:
-- Remaining Appendix A controls (AC-2 account management, AT-2/AT-3 training, CP-4
-  contingency testing, IR-4/IR-6 incident handling, CM-6/CM-7/CM-8 configuration mgmt)
+- CM-6/CM-7 (configuration settings and least functionality) implementation details
 - Configuration Management Plan (VE-CM-SOP-3 / Appendix H)
 - DR/BC Plan (VE-SC-SOP-2 / Appendix G) — exercise schedule and evidence
 - Incident Response Plan (Appendix I) — exercise schedule and templates
-- Access Control procedures — periodic access review implementation details
-- Security Training (AT-2, AT-3) — evidence and tracking mechanisms
 - Risk Register (VE-RA-SOP-3) — currency and completeness
-- Separation of Duties (Table 11.1) — verify role assignments match actual team structure
-  for a <20 person company (10 roles defined; likely significant role overlap)
+- AT-3 (Role-Based Training) — privileged user training specifics
+- Cryptographic Modules (Appendix Q) — FIPS validation currency
+- Remaining RA controls (RA-2, RA-3, RA-7, RA-9)
