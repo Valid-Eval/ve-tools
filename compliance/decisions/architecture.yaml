@@ -1,0 +1,37 @@
+# Architecture & Tooling Decisions
+#
+# Records decisions about how the compliance operating system itself is built
+# and operated. These are not vulnerability dispositions — they're design choices
+# that shape the system.
+#
+# Each decision should have rationale, alternatives considered, and a review
+# trigger (what would cause us to revisit this choice).
+
+- id: ARCH-001
+  date: 2026-03-16
+  decision: "Documentation platform: GitHub + Markdown"
+  description: >
+    All compliance operating system documentation (design docs, commitments map,
+    SSP review findings, operational narratives) lives in GitHub repos as markdown
+    files. PRs are used for review and feedback from stakeholders including Rule4.
+  rationale: >
+    Reduces tooling surface — already using GitHub for code and operational data.
+    Provides version control, PR-based review with line-level comments, direct
+    AI read/write access, and shareable links for anyone with repo access. Avoids
+    adding another platform (Confluence, Google Docs) to manage.
+  alternatives_considered:
+    - "Confluence: Better rich formatting and inline commenting, but VE usage has
+      been spotty and adds a tool to maintain. Available as backup plan."
+    - "Google Docs: Best for collaborative editing with non-technical stakeholders,
+      but no AI integration and weak version control."
+    - "Dropbox: Where SSP currently lives (uploaded from Rule4), but no collaboration
+      features or version control."
+  backup_plan: >
+    Migrate to Confluence if GitHub markdown + PR reviews prove insufficient for
+    stakeholder collaboration — specifically if Rule4 or other reviewers find the
+    PR review workflow too cumbersome for narrative document feedback.
+  decided_by: jacob
+  review_trigger: >
+    Revisit if stakeholders consistently struggle with GitHub-based review, or if
+    FedRAMP 20x introduces documentation format requirements that favor a different
+    platform.
