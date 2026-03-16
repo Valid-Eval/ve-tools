@@ -1,7 +1,8 @@
-# Questions for Jacob — SSP Review Follow-up
+# Open Questions — SSP Review Follow-up
 
 *These questions arose during the comprehensive SSP review. Answers will determine
-whether certain findings need to be escalated, downgraded, or resolved differently.*
+whether certain findings need to be escalated, downgraded, or resolved differently.
+Answers may come from Jacob, Trent/Rule4, Devon, InfusionPoints, or other team members.*
 
 ---
 
@@ -24,8 +25,11 @@ Nightwatch (functional e2e testing, not security scanning). Is there an actual D
 tool (OWASP ZAP, Burp Suite, etc.) or is this a gap?
 
 **Q4: Is SonarQube still actively used?**
-Referenced throughout the SSP as the SAST tool. The SSP also mentions GitHub CodeQL
-in SA-11(1). Are both in use, or has one replaced the other?
+**ANSWERED (2026-03-16)**: Yes. SonarQube is actively in use, licensed, integrated
+with GitHub including a quality gate. However it is on an old version — upgrading to
+the current LTA release is an urgent action item (tracked as A-15 in plan.md and
+D-007 in delegations tracker). The CodeQL reference in SA-11(1) needs clarification
+with Trent — if CodeQL is NOT in use, that reference should be removed from SA-11(1).
 
 **Q5: Is the "SecOps Group" anyone currently?**
 Referenced 19 times in the SSP. With InfusionPoints not yet operational, who currently
@@ -64,8 +68,10 @@ Are hardware security keys (YubiKey, FIDO2) deployed for any accounts? Is there 
 migration plan?
 
 **Q12: Does Keycloak actually support PIV/CAC authentication?**
-IA-8(1) claims Keycloak supports PIV with FIPS 201 validation. Is this configured
-and tested, or aspirational?
+**ANSWERED (2026-03-16)**: Yes. Keycloak supports PIV/CAC via NASA Launchpad as an
+IdP (currently live). Other IdP integrations pending. IA-F13 downgraded — the SSP
+claim is accurate for NASA. The SSP could be strengthened by naming NASA Launchpad
+as the current PIV-enabled IdP integration.
 
 **Q13: What identity proofing is actually performed for privileged roles?**
 IA-12 claims IAL3 (in-person ISSO verification with biometric capture). Is this the

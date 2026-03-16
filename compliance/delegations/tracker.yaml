@@ -67,5 +67,21 @@
   created: 2026-03-16
   notes: "Held until DU base image situation resolved."
 
+- id: D-007
+  what: "SonarQube upgrade to current LTA release"
+  owner: jacob
+  due: null
+  status: pending
+  created: 2026-03-16
+  priority: urgent
+  notes: >
+    Current SonarQube instance is on an old version. Upgrade to current LTA release
+    and verify GitHub Actions workflows + quality gate integration still works.
+    Multiple reasons for urgency: (1) old version may have security vulnerabilities,
+    (2) SSP references SonarQube as active SAST tool — must be current for assessment,
+    (3) quality gate effectiveness depends on current rules/analyzers,
+    (4) license compliance may require staying on supported versions.
+    Tracked as A-15 in supply chain plan.
+
 # === Recurring (auto-generated entries go below) ===
 # The /compliance skill will generate monthly/quarterly entries from calendar/recurring.yaml
