@@ -9,6 +9,21 @@ remaining procedures) + automated grep sweeps across full 47K-line SSP text.*
 
 ---
 
+## Authorization Context
+
+**VE holds an active Agency ATO with NASA** and is listed as **FedRAMP Ready**
+(FR2514747735) on the FedRAMP Marketplace. 3PAO: Igynte Platform (conducted the
+readiness assessment). VE is pursuing FedRAMP authorization sponsorship with Army/DIU
+for IL-4/5.
+
+This means ConMon obligations (monthly deliverables to NASA as AO) are ACTIVE — not
+future. Controls marked "Planned" that should already be operational for an ATO'd
+system are more serious than they would be for a pre-authorization SSP. The SSP
+appears to have been written as a pre-authorization document but VE is past that stage
+for NASA.
+
+---
+
 ## Executive Summary
 
 **264 raw findings** identified across the full SSP v1.0, Appendix A v0.8, and ~30

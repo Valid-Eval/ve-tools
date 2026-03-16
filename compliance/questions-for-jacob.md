@@ -89,14 +89,20 @@ AT-4 (Training Records) is marked "Planned" in the SSP. Is there any training tr
 mechanism in place (even a spreadsheet)?
 
 **Q18: What's InfusionPoints' expected go-live date?**
-Multiple controls reference SOC/monitoring capabilities that depend on InfusionPoints
-being operational.
+**ANSWERED (2026-03-16)**: InfusionPoints went live approximately 2026-03-09.
+This resolves F-5 (InfusionPoints not reflected in docs) — they now need to be added
+to the SSP and ConMon plan. Also resolves the "SecOps Group" ambiguity — InfusionPoints
+can now be named as the SOC provider. AU-6 weekly audit review should transition to
+InfusionPoints.
 
 **Q19: Has a 3PAO been selected?**
-CA-2(1) (Independent Assessors) is marked "Planned." Is there a 3PAO engagement in
-progress?
+**ANSWERED (2026-03-16)**: Igynte Platform is the 3PAO. They conducted the FedRAMP
+readiness assessment. CA-2(1) "Planned" checkbox is stale — should be at least
+"Partially Implemented" given the readiness assessment is complete.
 
 **Q20: What's VE's current authorization status?**
-Pre-ATO? In process? The SSP reads as a pre-authorization document (CA-6 Partially
-Implemented, POA&M "to be completed"). Clarifying this determines which findings are
-"expected at this stage" vs. "should already be done."
+**ANSWERED (2026-03-16)**: VE is FedRAMP Ready (FR2514747735) with an active Agency
+ATO from NASA. Pursuing FedRAMP authorization sponsorship with Army/DIU for IL-4/5.
+This means ConMon deliverables should be active NOW (monthly to NASA). Controls marked
+"Planned" are more serious than they appeared — an ATO assessor has already reviewed
+these. The SSP reads as pre-authorization but VE is past that for NASA.
