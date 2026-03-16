@@ -19,28 +19,40 @@ discovered through ongoing analysis of SSP content and supporting documents.
 
 **Severity**: HIGH — a 3PAO will compare these documents and flag the conflict
 
-**Finding**: Three sources define different remediation timelines for the same severity levels:
+**Finding**: FOUR sources define different remediation timelines for the same severity levels:
 
-| Severity | VE-RA-SOP-2 (Procedure) | VE-SC-POL-3 (Policy) | FedRAMP Rev 5 Actual |
-|----------|------------------------|---------------------|---------------------|
-| Critical | 30 days | 15 days | 15 days |
-| High | 30 days | 35 days | 30 days |
-| Medium | 90 days | 180 days | 90 days |
-| Low | 180 days | 360 days | 180 days |
+| Severity | SSP RA-5(d) | SSP SI-2(3) | VE-RA-SOP-2 | VE-SC-POL-3 | FedRAMP Rev 5 |
+|----------|-------------|-------------|-------------|-------------|---------------|
+| Critical | **30 days** | **30 days** | 30 days | 15 days | **15 days** |
+| High | 30 days | 30 days | 30 days | 35 days | 30 days |
+| Medium | 90 days | 90 days | 90 days | 180 days | 90 days |
+| Low | 180 days | 180 days | 180 days | 360 days | 180 days |
 
-VE-SC-POL-3 cites Iron Bank Acceptance Baseline Criteria as its source. VE-RA-SOP-2 uses
-different values without citing a source. Neither exactly matches FedRAMP Rev 5 requirements.
+The SSP (Appendix A v0.8) states 30 days for Critical in both RA-5(d) and SI-2(3)(b).
+FedRAMP Rev 5 requires 15 days for Critical. This means the SSP itself commits to a
+timeline that does NOT meet FedRAMP requirements for critical vulnerabilities.
 
-**Risk**: An assessor comparing the policy to the procedure will see conflicting commitments.
-More importantly, if VE operates to the more lenient timelines (VE-SC-POL-3: 180d for Medium,
-360d for Low), it would exceed FedRAMP Rev 5 requirements (90d / 180d respectively).
+VE-SC-POL-3 (the policy) actually has the correct 15-day critical timeline but has
+incorrect values for Medium (180d vs 90d required) and Low (360d vs 180d required),
+citing Iron Bank Acceptance Baseline Criteria rather than FedRAMP Rev 5.
 
-**Recommendation**: Align both documents to a single timeline that meets or exceeds FedRAMP
-Rev 5 requirements. Consider whether Iron Bank timelines should be referenced at all, or
-whether FedRAMP Rev 5 should be the sole authority. The policy should be the authoritative
-source with the procedure referencing it.
+**Risk**: HIGH. A 3PAO will compare the SSP control implementation to FedRAMP requirements
+and flag that Critical=30d exceeds the 15-day requirement. They will also find the policy
+and procedure documents disagree with each other and with the SSP. This is a multi-document
+inconsistency that suggests the timelines were not systematically derived from a single
+authoritative source.
+
+**Recommendation**: Establish FedRAMP Rev 5 as the sole authoritative source for
+remediation timelines. Update ALL documents to match:
+- Critical: 15 calendar days
+- High: 30 calendar days
+- Medium: 90 calendar days
+- Low: 180 calendar days
+- KEV-listed: 14 calendar days (BOD 22-01 — see F-4)
 
 **Documents involved**:
+- SSP Appendix A, RA-5(d) implementation (line ~24530 in extracted text)
+- SSP Appendix A, SI-2(3)(b) parameter and implementation (line ~29437, ~29486)
 - `VE-RA-SOP-2_Vulnerability_Management_Procedure.pdf` (Section 5.1.2)
 - `VE-SC-POL-3_Vulnerability_Management_Policy.pdf` (Section 6.3.2)
 
@@ -192,14 +204,129 @@ ConMon plan. Note that actual practice exceeds this minimum.
 
 ---
 
+## F-8: SSP Appendix A Version Mismatch with SSP Main Body
+
+**Severity**: LOW — minor, but an assessor may note it
+
+**Finding**: The SSP main body is version 1.0 (dated 12/4/2024). Appendix A (Security
+Controls) is version 0.8 (dated 12/31/2024). The appendix is newer but has a lower
+version number, suggesting it may not have been finalized alongside the main body.
+
+**Risk**: An assessor may question whether Appendix A is the final version or a draft.
+The v0.8 designation suggests it was still being refined when the SSP was submitted.
+
+**Recommendation**: Align version numbers during the current review cycle.
+
+**Documents involved**:
+- SSP main body (v1.0, 12/4/2024)
+- SSP Appendix A (v0.8, 12/31/2024)
+
+---
+
+## F-9: SSP References NeuVector But Not in Security Tools Table
+
+**Severity**: LOW — completeness issue
+
+**Finding**: The CA-7 implementation narrative (Part b) mentions "NeuVector is incorporated
+for container security" but NeuVector does not appear in Table 8.1 (Security and Management
+Technologies). If NeuVector is deployed, it should be in the tools inventory. If it is NOT
+deployed (aspirational language), the SSP should not claim it.
+
+**Risk**: An assessor asking about container security tooling may reference this claim.
+If NeuVector is not actually deployed, this is a misrepresentation.
+
+**Recommendation**: Either add NeuVector to Table 8.1 (if deployed) or remove the
+reference from the CA-7 narrative (if not deployed). Verify actual deployment status.
+
+**Documents involved**:
+- SSP Appendix A, CA-7 Part b implementation narrative
+- SSP Table 8.1 (Security and Management Technologies)
+
+---
+
+## F-10: SSP Scanning Frequency Inconsistency with ConMon Plan
+
+**Severity**: LOW — the more frequent commitment is the one that matters
+
+**Finding**: The SSP's CA-7 Part a states "regular bi-weekly vulnerability scans" as a
+monitored metric. The ConMon plan commits to monthly scan submission to the AO. The
+Vulnerability Management Policy says quarterly minimum. Actual practice (Inspector2,
+Dependabot, Grype) is continuous/daily.
+
+All three are defensible since "at least" language applies, but the SSP's "bi-weekly"
+creates a specific commitment that's different from the monthly cadence in the ConMon plan.
+
+**Risk**: Minor. The monthly ConMon deliverable is the binding commitment. An assessor
+is unlikely to hold VE to the bi-weekly claim specifically, but consistency across
+documents is always better.
+
+**Recommendation**: Align language. Consider stating scanning is "continuous" with
+"results compiled and submitted monthly" to match actual practice and the ConMon plan.
+
+**Documents involved**:
+- SSP Appendix A, CA-7 Part a
+- VE-CA-SOP-7 Appendix A (monthly scan submission)
+- VE-SC-POL-3 §6.1.2 (quarterly minimum)
+
+---
+
+## F-11: SSP Supply Chain Control References Only Inspector + SonarQube
+
+**Severity**: MEDIUM — supply chain controls should reflect actual tooling
+
+**Finding**: The SR-2 implementation (Part a) states supply chain risks are managed with
+"continuous, automated vulnerability scanning using AWS Inspector and SonarQube." This
+omits Grype (primary infrastructure image scanner), Dependabot (app-layer dependencies),
+and Renovate (automated dependency updates) — all of which are actively used and central
+to VE's actual supply chain risk management.
+
+This is the same class of issue as F-3 (Grype not in SSP) but specifically in the supply
+chain controls section, where accurate tooling descriptions are most important.
+
+**Risk**: A supply chain-focused assessor will ask what tools VE uses. The SSP answer
+(Inspector + SonarQube) doesn't match reality (Inspector + Grype + Dependabot + Renovate +
+SonarQube). This undermines credibility in an area of increasing FedRAMP focus.
+
+**Recommendation**: Update SR-2 and SR-3 implementations to reference the full tooling set.
+Describe the three-scanner model and Renovate's role in automated dependency management.
+
+**Documents involved**:
+- SSP Appendix A, SR-2 Part a implementation
+- SSP Appendix A, SR-3 implementation
+
+---
+
+## F-12: SSP POA&M Appendix Listed as "To be completed"
+
+**Severity**: MEDIUM — expected for initial SSP, but needs tracking
+
+**Finding**: Appendix O (POA&M) is listed as "To be completed" in the SSP appendices table
+(Table 12.1). This is normal for a pre-authorization SSP, but the ConMon plan commits to
+monthly POA&M updates to the AO.
+
+**Risk**: If VE is in ConMon (post-authorization), the POA&M must exist. If pre-authorization,
+this is expected. Need to clarify VE's current authorization status.
+
+**Recommendation**: Establish the POA&M document. The compliance OS is designed to help
+generate and maintain POA&M entries from vulnerability finding dispositions.
+
+**Documents involved**:
+- SSP Table 12.1 (Appendix O: "To be completed")
+- VE-CA-SOP-7 (commits to monthly POA&M submission)
+
+---
+
 ## Future Findings
 
 Additional findings will be added as more SSP content and supporting documents are
 reviewed. Areas still to examine include:
-- Appendix A (Security Controls) — full control implementation details
-- Configuration Management Plan (VE-CM-SOP-3)
-- DR/BC Plan (VE-SC-SOP-2) — exercise schedule and evidence
-- Access Control procedures — periodic access review cadence
-- Security Training — evidence and tracking
+- Remaining Appendix A controls (AC-2 account management, AT-2/AT-3 training, CP-4
+  contingency testing, IR-4/IR-6 incident handling, CM-6/CM-7/CM-8 configuration mgmt)
+- Configuration Management Plan (VE-CM-SOP-3 / Appendix H)
+- DR/BC Plan (VE-SC-SOP-2 / Appendix G) — exercise schedule and evidence
+- Incident Response Plan (Appendix I) — exercise schedule and templates
+- Access Control procedures — periodic access review implementation details
+- Security Training (AT-2, AT-3) — evidence and tracking mechanisms
 - Risk Register (VE-RA-SOP-3) — currency and completeness
-- Incident Response Plan (Appendix I) — exercise schedule
+- Separation of Duties (Table 11.1) — verify role assignments match actual team structure
+  for a <20 person company (10 roles defined; likely significant role overlap)
