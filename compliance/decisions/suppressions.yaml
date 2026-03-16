@@ -1,0 +1,23 @@
+# Finding Suppression Rules
+#
+# Findings matching these patterns are auto-suppressed in triage with documented rationale.
+# Each suppression must have an approver, date, and rationale sufficient for auditor review.
+#
+# match_type: image_name | repo_path | package_pattern | ecr_repo
+# exception: conditions under which the suppression does NOT apply (finding still tracked)
+
+- id: S-001
+  pattern: "e2e-test-server"
+  match_type: image_name
+  rationale: >
+    E2E test server container is ephemeral: used only in CI pipelines and for
+    acceptance-testing new production environments before any customer data is
+    present. Removed from any production cluster entirely before customer data
+    enters. Vulnerabilities in this container carry minimal real risk.
+  exception: >
+    Retain findings involving container escape, privilege escalation to host,
+    kernel exploitation, or other APT-class risks that could persist beyond
+    the container lifecycle.
+  approved_by: jacob
+  approved_date: 2026-03-01
+  source: "A-0 decision, supply chain investigation session 3"

@@ -1,0 +1,71 @@
+# Delegation & Accountability Tracker
+#
+# Tracks cross-party commitments at the compliance level.
+# Dev work stays in Jira/GitHub — this is the "are the trains running?" view
+# for compliance-relevant deliverables.
+#
+# status: pending | in-progress | delivered | overdue | blocked
+# owner: jacob | rule4 | 3pao | infusionpoints | devon | dev_team
+
+# === Active Items ===
+
+- id: D-001
+  what: "SSP periodic review — resolve findings from ssp-review-findings.md"
+  owner: rule4
+  due: null
+  status: in-progress
+  created: 2026-03-16
+  notes: >
+    7 findings identified (F-1 through F-7). Key issues: vuln timeline
+    inconsistencies across policy/procedure docs, Grype not in SSP,
+    BOD 22-01/KEV not addressed. Share with Trent for resolution.
+  reference: "~/.claude/supply-chain-skill-development/investigation/ssp-review-findings.md"
+
+- id: D-002
+  what: "ARC upgrade to 0.13.1"
+  owner: devon
+  due: null
+  status: in-progress
+  created: 2026-03-13
+  notes: >
+    Briefing doc delivered. Needs CI downtime window. Key risk: CRD deletion
+    required at 0.9.0 and 0.12.0, verify postRenderers dind image override
+    compatibility.
+  reference: "/Users/jacob/Documents/GitHub/arc-upgrade-briefing.md"
+
+- id: D-003
+  what: "InfusionPoints SOC onboarding"
+  owner: infusionpoints
+  due: null
+  status: in-progress
+  created: 2026-03-16
+  notes: >
+    Spooling up for Continuous Monitoring / SOC-as-a-Service. Once operational,
+    update ConMon plan roles (F-5) and SSP references.
+
+- id: D-004
+  what: "ve-iac PR #188 — IL2 ECR lifecycle policies"
+  owner: jacob
+  due: null
+  status: pending
+  created: 2026-03-16
+  notes: "Merge PR + tofu apply. Fixes IL2 stg/prod lifecycle policies."
+
+- id: D-005
+  what: "ve-zarf PR #337 — UDS package replication workflow"
+  owner: jacob
+  due: null
+  status: pending
+  created: 2026-03-16
+  notes: "Merge PR. Verify Slack notifications post-merge."
+
+- id: D-006
+  what: "image-neo4j-5-hardened PR #16 — Renovate policy"
+  owner: jacob
+  due: null
+  status: pending
+  created: 2026-03-16
+  notes: "Held until DU base image situation resolved."
+
+# === Recurring (auto-generated entries go below) ===
+# The /compliance skill will generate monthly/quarterly entries from calendar/recurring.yaml

@@ -1,0 +1,206 @@
+# Compliance Calendar — Recurring Obligations
+#
+# Source: VE-CA-SOP-7 (Continuous Monitoring Plan), VE-SC-POL-3, VE-RA-SOP-2,
+#         VE-SR-SOP-1, VE-AC-SOP-10, VE-AT-POL-1, FedRAMP Rev 5
+#
+# assessor_scrutiny: how likely a 3PAO/AO will check this
+#   high   = will definitely be checked, low flexibility
+#   medium = likely checked, some flexibility on depth/timing
+#   low    = spot-checked, mostly needs to exist
+#
+# owner: who is primarily responsible for delivery
+#   jacob          = CTO / System Owner
+#   rule4          = Rule4 (CISO / Information Security)
+#   3pao           = Third-Party Assessment Organization
+#   infusionpoints = InfusionPoints (ConMon / SOC-as-a-Service)
+#   dev_team       = Development team members
+
+monthly:
+  - name: ConMon Executive Summary
+    description: >
+      Prepare and submit monthly executive summary of continuous monitoring
+      efforts to the AO via designated repository.
+    source: VE-CA-SOP-7 Appendix A (CA-05)
+    due: last_business_day
+    owner: rule4
+    deliverable: true
+    assessor_scrutiny: high
+    notes: "Primary ConMon artifact. Template in VE-CA-SOP-7 Appendix B."
+
+  - name: Vulnerability & Configuration Scan Results
+    description: >
+      Compile and submit OS/infrastructure, web application, database,
+      container, and configuration scan results to AO.
+    source: VE-CA-SOP-7 Appendix A (RA-05a, CA-07, CM-06)
+    due: last_business_day
+    owner: jacob
+    deliverable: true
+    assessor_scrutiny: high
+    notes: "Must cover all scan types. Scanners: Inspector2, Grype, Dependabot, SonarQube."
+
+  - name: POA&M Update
+    description: >
+      Update the POA&M document with current status of all open findings
+      and submit to AO.
+    source: VE-CA-SOP-7 Appendix A (CA-05)
+    due: last_business_day
+    owner: rule4
+    deliverable: true
+    assessor_scrutiny: high
+
+  - name: Asset Inventory Update
+    description: >
+      Maintain and update the asset inventory document, submit to AO.
+    source: VE-CA-SOP-7 Appendix A (CM-08)
+    due: last_business_day
+    owner: jacob
+    deliverable: true
+    assessor_scrutiny: medium
+    notes: "Includes IIW (Appendix M). Cross-reference with container fleet doc and repo inventory."
+
+quarterly:
+  - name: Access Review — Infrastructure
+    description: >
+      Review all infrastructure access (AWS IAM, EKS, ECR, SSM) for
+      appropriateness. Document findings and any access revocations.
+    source: VE-AC-SOP-10 (AC-02)
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: high
+    notes: "Template: VE_Quarterly_Access_Review-infrastructure.pdf"
+
+  - name: Access Review — Super Admin / Application
+    description: >
+      Review all application-level privileged access for appropriateness.
+    source: VE-AC-SOP-10 (AC-02)
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: high
+    notes: "Template: VE_Quarterly_Access_Review-super_admin.pdf"
+
+  - name: Vulnerability Trend Report
+    description: >
+      Assess results from all vulnerability scans, record in comprehensive
+      report for management review.
+    source: VE-SC-POL-3 §6.1.3
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: medium
+
+  - name: Escalation Avoidance KPI Review
+    description: >
+      Review frequency of FedRAMP escalations, identify trends, integrate
+      lessons learned into process improvements.
+    source: VE-CA-SOP-7 §6.5 (Table 1)
+    due_months: [3, 6, 9, 12]
+    owner: jacob
+    assessor_scrutiny: low
+
+annually:
+  - name: SSP and Supporting Documents Update
+    description: >
+      Update the SSP and all supporting documents. Submit to 3PAO 30 days
+      before initiation of annual assessment activities.
+    source: VE-CA-SOP-7 Appendix A (PL-02c)
+    due_date: "11-15"
+    owner: rule4
+    assessor_scrutiny: high
+    notes: "Currently undergoing periodic review (as of 2026-03). SSP v1.0 dated 12/4/2024."
+
+  - name: Static Code Analysis Methodology Update
+    description: >
+      Update documented methodology for reviewing newly developed code.
+      Submit to 3PAO 30 days before annual assessment.
+    source: VE-CA-SOP-7 Appendix A (SA-11(01), PL-02d)
+    due_date: "11-15"
+    owner: jacob
+    assessor_scrutiny: medium
+    notes: "Current tools: SonarQube, Dependabot, Grype. SSP only lists SonarQube (see F-3)."
+
+  - name: Contingency Plan Test
+    description: >
+      Perform testing and exercises of the IT Contingency Plan. Document
+      results in Appendix F of the ISCP. Submit to AO.
+    source: VE-CA-SOP-7 Appendix A (CP-04a)
+    due_date: "12-31"
+    owner: jacob
+    assessor_scrutiny: high
+    notes: "Can be tabletop exercise. Document participants, scenario, findings, lessons learned."
+
+  - name: Incident Response Test
+    description: >
+      Perform incident response testing. Document results and submit to AO.
+    source: VE-CA-SOP-7 Appendix A (IR-03)
+    due_date: "12-31"
+    owner: jacob
+    assessor_scrutiny: high
+    notes: "Can be tabletop exercise. IR Plan is SSP Appendix I."
+
+  - name: Penetration Testing (3PAO)
+    description: >
+      3PAO conducts penetration testing. Results submitted in/with the SAR.
+    source: VE-CA-SOP-7 Appendix A (CA-08)
+    due_date: "12-31"
+    owner: 3pao
+    assessor_scrutiny: high
+    notes: "Coordinate with Rule4 for scheduling."
+
+  - name: Red Team Test
+    description: >
+      Perform red-team exercises with independent third-party. Document
+      results and submit to AO.
+    source: VE-CA-SOP-7 Appendix A (CA-08(02))
+    due_date: "12-31"
+    owner: 3pao
+    assessor_scrutiny: high
+
+  - name: Security Assessment and SAR (3PAO)
+    description: >
+      3PAO conducts annual security assessments. SAR submitted to AO.
+    source: VE-CA-SOP-7 Appendix A (CA-02c)
+    due_date: "12-31"
+    owner: 3pao
+    assessor_scrutiny: high
+
+  - name: Security Awareness Training — All Personnel
+    description: >
+      Ensure all personnel with system access complete security awareness
+      training. Document completion.
+    source: VE-AT-POL-1, VE-AT-SOP-1 (AT-02)
+    due_date: "12-31"
+    owner: jacob
+    assessor_scrutiny: high
+    notes: "Every person with system access. Maintain training records."
+
+  - name: All Policies Annual Review
+    description: >
+      Review all security policies and procedures. Update revision history
+      even if no substantive changes needed.
+    source: Each policy document states "reviewed on an annual basis"
+    due_date: "12-31"
+    owner: jacob
+    assessor_scrutiny: medium
+    notes: >
+      ~100 policy/procedure docs in plan content directory. Review can be
+      'reviewed, no changes' with updated date where appropriate.
+
+  - name: Vendor Re-Evaluation
+    description: >
+      Conduct review of all approved vendors per VE-SR-SOP-1 §5.3.
+      Document in Jira.
+    source: VE-SR-SOP-1 §5.3
+    due_date: "12-31"
+    owner: jacob
+    assessor_scrutiny: low
+    notes: "Current vendors: AWS, GitHub, Defense Unicorns, Rule4, InfusionPoints."
+
+# Weekly operational cadence (not compliance deliverables — keeps the machine running)
+weekly:
+  - name: Vulnerability Triage Session
+    description: >
+      Review untriaged findings via /compliance triage. Record dispositions.
+      Merge ready Renovate PRs. Check delegation tracker.
+    day: monday
+    owner: jacob
+    assessor_scrutiny: null
+    notes: "Target 30-60 min. The core operating rhythm."

@@ -1,0 +1,24 @@
+# Risk Acceptance Decisions
+#
+# Formal risk acceptances for vulnerabilities where remediation is not feasible
+# or not warranted. Each entry must have sufficient rationale and compensating
+# controls for auditor review.
+#
+# Every risk acceptance should have a review_date — these don't last forever.
+# The /compliance skill flags acceptances approaching their review date.
+
+# === Risk acceptances will be populated during triage sessions ===
+# Example entry:
+#
+# - cve: CVE-2024-99999
+#   component: "libsqlite3 in iron-bank-redis"
+#   severity: medium
+#   accepted_by: jacob
+#   accepted_date: 2026-03-16
+#   rationale: >
+#     Vendor (Iron Bank) wont-fix. SQLite not exposed to untrusted input
+#     in our deployment. Redis uses it only for internal RDB persistence.
+#   review_date: 2026-09-16
+#   compensating_controls: >
+#     Network policy restricts Redis to internal cluster traffic only.
+#     No user-supplied data reaches SQLite code path.

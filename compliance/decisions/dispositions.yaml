@@ -1,0 +1,34 @@
+# Vulnerability Finding Dispositions
+#
+# Records human decisions on vulnerability findings. This is the audit trail
+# that shows a 3PAO we're actively managing findings, not ignoring them.
+#
+# status values:
+#   open         — identified, not yet triaged
+#   in-progress  — remediation underway
+#   remediated   — fix applied, awaiting scan verification
+#   verified     — scan confirms remediation
+#   mitigated    — compensating control applied, risk reduced
+#   risk-accepted — risk formally accepted (see risk-acceptances.yaml for detail)
+#   vendor-dep   — fix depends on upstream vendor
+#   not-affected — finding doesn't apply to our deployment
+#   suppressed   — matches a suppression rule (see suppressions.yaml)
+#
+# Entries are added during /compliance triage sessions.
+# Git history provides the full audit trail of changes.
+
+# === Dispositions will be populated during first triage session ===
+# Example entry:
+#
+# - cve: CVE-2025-12345
+#   component: "openssl 1.1.1w"
+#   severity: critical
+#   scanner: grype
+#   status: in-progress
+#   discovered: 2026-03-01
+#   sla_deadline: 2026-03-16
+#   decided: 2026-03-10
+#   decided_by: jacob
+#   rationale: "Patch available, tracked in image-ruby PR #22"
+#   evidence: "https://github.com/Valid-Eval/image-ruby/pull/22"
+#   verified: null
