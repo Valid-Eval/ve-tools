@@ -420,15 +420,130 @@ and without material issues:
 
 ---
 
-## Future Findings
+## F-16: Configuration Management Plan References "BigBang" (Superseded by UDS Core)
 
-Additional findings will be added as more SSP content and supporting documents are
-reviewed. Areas still to examine include:
-- CM-6/CM-7 (configuration settings and least functionality) implementation details
-- Configuration Management Plan (VE-CM-SOP-3 / Appendix H)
-- DR/BC Plan (VE-SC-SOP-2 / Appendix G) — exercise schedule and evidence
-- Incident Response Plan (Appendix I) — exercise schedule and templates
-- Risk Register (VE-RA-SOP-3) — currency and completeness
-- AT-3 (Role-Based Training) — privileged user training specifics
-- Cryptographic Modules (Appendix Q) — FIPS validation currency
-- Remaining RA controls (RA-2, RA-3, RA-7, RA-9)
+**Severity**: MEDIUM — reflects an outdated architecture understanding
+
+**Finding**: VE-CM-SOP-3 (Appendix H) §3.2.1 lists "Bigbang" as a component tracked
+for baseline configurations. BigBang has been replaced by UDS Core from Defense Unicorns.
+The CMP should reference UDS Core, not BigBang.
+
+Additionally, §3.4.1 (Monitoring Tools) only mentions AWS Inspector for vulnerability
+scanning — same incomplete tooling reference pattern as F-3 and F-11.
+
+**Recommendation**: Update CMP to reference UDS Core instead of BigBang. Add Grype and
+Dependabot to the monitoring tools section.
+
+**Documents involved**:
+- VE-CM-SOP-3 (Appendix H) §3.2.1 and §3.4.1
+
+---
+
+## F-17: Software & Tooling Inventory Contains Archived/Deprecated Entries
+
+**Severity**: LOW — inventory accuracy, easy to fix
+
+**Finding**: VE-CM-INV-2 (Software & Tooling Inventory) includes several items that
+are no longer in active use or whose repos have been archived:
+- **administrate-field-ckeditor**: Repo archived 2026-03-04
+- **react-dropzone-s3-uploader**: Repo archived 2026-03-04
+- **Kohana PHP Framework**: Legacy, likely no longer in use
+- **WSC CKEditor Plugin**: May be related to the archived administrate-field-ckeditor
+
+Additionally, the inventory does NOT include several tools actively in use:
+Grype, Renovate, Zarf, Flux, OpenTofu/Terraform, crane.
+
+**Recommendation**: Remove archived entries and add all actively-used tools during the
+annual review. Cross-reference against the org repo inventory.
+
+**Documents involved**:
+- VE-CM-INV-2 (Software & Tooling Inventory)
+
+---
+
+## F-18: CAB vs CCB Terminology Inconsistency
+
+**Severity**: LOW — cosmetic but could confuse assessors
+
+**Finding**: VE-CM-POL-5 uses "Change Authorization Board (CAB)." VE-CM-SOP-3 uses
+"Configuration Control Board (CCB)." SSP Appendix A CM-6 uses "CAB." These appear to
+refer to the same body (CEO + CTO per CMP §2.2.1).
+
+**Recommendation**: Pick one term and use it consistently across all documents.
+
+**Documents involved**:
+- VE-CM-POL-5 §5.1, VE-CM-SOP-3 §2.2.1, SSP Appendix A CM-6 Part b
+
+---
+
+## F-19: Risk Register is Static — No Evidence of Ongoing Updates
+
+**Severity**: MEDIUM — risk register must be a living document
+
+**Finding**: VE-RA-SOP-3 (Risk Register) v1.0 dated 2024-12-07 contains 11 risks, all
+with status "Open" and no evidence of updates since initial creation. The Risk Management
+Plan requires risks to be "regularly reviewed" with "regular risk management team meetings."
+
+For a living register, an assessor expects: updated statuses, new risks added since
+creation, evidence of periodic review, and mitigation progress notes.
+
+Notable risks directly relevant to our work:
+- Risk #1 (High): "Delay in recovery due to undocumented/untested backup procedures"
+- Risk #5 (Moderate): "Exploitation of unpatched vulnerabilities in public components"
+
+**Recommendation**: Establish quarterly risk register review. Add risks from our supply
+chain investigation. Update mitigation statuses to reflect current state.
+
+**Documents involved**:
+- VE-RA-SOP-3 (Risk Register)
+- VE-RA-SOP-4 (Risk Management Plan) §5
+
+---
+
+## F-20: NeuVector IS in Software Inventory (Partial Resolution of F-9)
+
+**Severity**: Informational — updates F-9
+
+**Finding**: NeuVector appears in VE-CM-INV-2 as a licensed component (Apache v2.0,
+vendor SUSE). Confirms it IS part of the authorized baseline — ships with UDS Core.
+F-9 remains valid: should also be added to SSP Table 8.1.
+
+---
+
+## Controls and Documents Reviewed Without Findings (Cumulative)
+
+**Appendix A Security Controls**:
+- AC-2: Comprehensive. Quarterly privileged / annual non-privileged access review.
+- AT-2: Module-based + phishing + tabletops. Initial + annual cadence.
+- CP-4: Multiple test types. Annual cadence.
+- IR-4: NIMS/ICS-aligned. Post-mortem process. Well-structured.
+- CM-6: CIS baselines, AWS Config monitoring.
+- CM-7: Port/protocol management documented.
+- CM-8: AWS Systems Manager + package managers. Monthly review.
+- SR-2: Matches VE-SR-SOP-1. Annual review.
+- SR-3: SBOM, SSDLC, network segmentation, code review.
+- Appendix Q: FIPS-validated (AWS-LC #4816, Chainguard OpenSSL 3.0). Current (v1.1, Jan 2025).
+
+**Supporting Documents**:
+- VE-SR-SOP-1 (SCRM Plan): Well-structured. Monthly check-ins, annual re-evaluation.
+- VE-AC-SOP-10 (Access Audit): Concrete step-by-step for AWS IAM + VE app.
+- VE-AT-SOP-1 (Training): Role-based. Initial + annual. Three tiers (Leadership/Privileged/Normal).
+- VE-RA-SOP-4 (Risk Management Plan): Solid framework. 5x5 risk matrix.
+- VE-CM-POL-5 (Change Management): CAB process, impact analysis, testing.
+- VE-CM-SOP-7 (Config Management Procedures): Baselining, change control, monitoring.
+- VE-SI-SOP-1 (System Integrity): Logging, hardening, patch management.
+- VE-AC-POL-5 (MDM Policy): Comprehensive. Enrollment, security, remote wipe.
+- VE-SR-SOP-3 (SBOM): Actual package inventory exists (Ruby gems confirmed).
+- VE-CM-INV-2 (Software Inventory): 40+ components tracked with license details.
+- VE_Host-Based_Protections: Inspector agent confirmed on all prod EC2 instances.
+- VE-RA-SOP-3 (Risk Register): 11 risks identified. Framework solid (findings in F-19).
+
+## Remaining Items for Future Review
+
+- IR Plan (Appendix I, 2919 lines) — exercise schedule, templates, notification timelines
+- DR/BC Plan (VE-SC-SOP-2, 2269 lines) — RPO/RTO, recovery procedures, exercise schedule
+- Appendix G (ISCP, 1854 lines) — full contingency plan details
+- AU-SOP-1 (Audit & Accountability) — log retention specifics, review cadence
+- VE-SR-SOP-2 (Vendor Notification Tracking) — vendor communication procedures
+- SA-POL-2 (SSDLC Policy) — secure development practices
+- ~30 remaining individual policy documents (mostly lower priority)
