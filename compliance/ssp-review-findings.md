@@ -1,25 +1,94 @@
-# SSP & Policy Document Review Findings
+# SSP & Policy Document Comprehensive Review Findings
 
 *Created: 2026-03-16*
-*Purpose: Issues identified during compliance operating system design work that should
-be addressed during the current SSP periodic review cycle.*
+*Methodology: Manual review of SSP core + 17 parallel agent reviews of all Appendix A
+control families (353 controls) + 4 supporting documents (IR Plan, DR/BC Plan, ISCP,
+remaining procedures) + automated grep sweeps across full 47K-line SSP text.*
 *For: Trent Hein (Rule4 / CISO), Jacob Ablowitz (CTO)*
+*Raw agent outputs: ~/.claude/supply-chain-skill-development/ssp-review-workspace/output/*
 
 ---
 
-## How to Use This Document
+## Executive Summary
 
-Each finding has a severity (how much it matters to an assessor), a recommendation, and
-the source documents involved. Findings are append-only — new issues get added as they're
-discovered through ongoing analysis of SSP content and supporting documents.
+**264 raw findings** identified across the full SSP v1.0, Appendix A v0.8, and ~30
+supporting policy/procedure documents. After dedup and consolidation, the findings
+organize into **9 systemic themes** plus document-specific issues.
+
+**The three most critical themes:**
+
+1. **~35 controls marked Planned or Partially Implemented** — concentrated in CM (13),
+   AC (7), CA/PL (6), AT (3), SA (2). These all require POA&M entries before assessment.
+   The CM family is the worst: 65% of controls not fully implemented.
+
+2. **Remediation timeline inconsistency** — the SSP, policy, and procedure documents
+   each state different timelines. The SSP says 30 days for Critical; FedRAMP requires
+   15 days. BOD 22-01 KEV 14-day requirement is absent from all documents.
+
+3. **DR/CP architecture fiction** — the SSP claims "hot site" with 30-minute RTO via
+   AWS EDR, but recovery procedures describe a cold-site Terraform rebuild. RTO/RPO
+   values are contradictory across 4+ locations. No CP test has been conducted (blank
+   template in Appendix G). Risk Register Risk #1 flags this same issue.
 
 ---
 
-## F-1: Vulnerability Remediation Timeline Inconsistency Across Documents
+## Theme 1: Controls Marked Planned or Partially Implemented
 
-**Severity**: HIGH — a 3PAO will compare these documents and flag the conflict
+These controls are NOT fully implemented per the SSP's own checkboxes. Each requires
+a POA&M entry with milestones. An assessor will focus on these.
 
-**Finding**: FOUR sources define different remediation timelines for the same severity levels:
+### Planned (not implemented at all)
+
+| Control | Family | Description | Agent |
+|---------|--------|-------------|-------|
+| AT-2(2) | Training | Insider threat training | ctrl-2 |
+| AT-2(3) | Training | Social engineering training | ctrl-2 |
+| AT-4 | Training | **Training records** — assessment blocker, no evidence capability | ctrl-2 |
+| CA-2(1) | Assessment | Independent assessor (3PAO) — assessment blocker | ctrl-3 |
+| CA-2(3) | Assessment | Leveraging external assessment results | ctrl-3 |
+| CA-8(2) | Assessment | Red team exercises | ctrl-3 |
+| CM-4 | Config Mgmt | **Impact analyses** — required Moderate control | ctrl-4a |
+| CM-4(2) | Config Mgmt | Verification of controls after changes | ctrl-4a |
+| CM-7 | Config Mgmt | **Least functionality** — critical control | ctrl-4a |
+| CM-7(1) | Config Mgmt | Periodic review of least functionality | ctrl-4a |
+| CM-7(2) | Config Mgmt | Prevent program execution | ctrl-4a |
+| CM-7(5) | Config Mgmt | Authorized software allow-by-exception | ctrl-4a |
+| PL-1 | Planning | **Planning policy and procedures** — foundational | ctrl-3 |
+| SA-1 | Acquisition | **SA policy and procedures** — foundational | ctrl-7b |
+| SA-4(10) | Acquisition | PIV products | ctrl-7b |
+| AC-20(1) | Access | Limits on authorized use of external systems | ctrl-1 |
+
+### Partially Implemented
+
+| Control | Family | Description | Agent |
+|---------|--------|-------------|-------|
+| AC-2(2) | Access | Automated temp/emergency account management | ctrl-1 |
+| AC-2(4) | Access | Automated audit actions | ctrl-1 |
+| AC-2(9) | Access | Shared/group account restrictions | ctrl-1 |
+| AC-4(21) | Access | Physical/logical separation of info flows | ctrl-1 |
+| AC-17(4) | Access | Privileged commands and access logging | ctrl-1 |
+| AC-20 | Access | Use of external systems | ctrl-1 |
+| CA-5 | Assessment | POA&M process | ctrl-3 |
+| CA-6 | Assessment | Authorization (pre-ATO) | ctrl-3 |
+| CM-2 | Config Mgmt | Baseline configuration | ctrl-4a |
+| CM-2(3) | Config Mgmt | Retention of previous configurations | ctrl-4a |
+| CM-6 | Config Mgmt | **Configuration settings** — #1 assessment failure area | ctrl-4a |
+| CM-6(1) | Config Mgmt | Automated config verification | ctrl-4a |
+| CM-8 | Config Mgmt | **System component inventory** — common failure | ctrl-4a |
+| CM-8(1) | Config Mgmt | Inventory updates during install/removal | ctrl-4a |
+| CM-8(3) | Config Mgmt | Automated unauthorized component detection | ctrl-4a |
+| AU-9 | Audit | Protection of audit information | ctrl-2 |
+
+### Controls with Blank/Unreadable Checkboxes (status unknown)
+
+MA-4(3), MA-4(6), AC-6(8), AC-17(6), AC-23, SC-7(10), SC-23(1), SC-23(3),
+SI-2(6), SI-4(19), SI-4(20), SI-4(22), SI-10(3), IA-5(13), PE-3(1)
+
+---
+
+## Theme 2: Remediation Timeline Inconsistency
+
+**The single most important finding for assessment readiness.**
 
 | Severity | SSP RA-5(d) | SSP SI-2(3) | VE-RA-SOP-2 | VE-SC-POL-3 | FedRAMP Rev 5 |
 |----------|-------------|-------------|-------------|-------------|---------------|
@@ -27,523 +96,261 @@ discovered through ongoing analysis of SSP content and supporting documents.
 | High | 30 days | 30 days | 30 days | 35 days | 30 days |
 | Medium | 90 days | 90 days | 90 days | 180 days | 90 days |
 | Low | 180 days | 180 days | 180 days | 360 days | 180 days |
+| KEV | not mentioned | not mentioned | not mentioned | not mentioned | **14 days** |
 
-The SSP (Appendix A v0.8) states 30 days for Critical in both RA-5(d) and SI-2(3)(b).
-FedRAMP Rev 5 requires 15 days for Critical. This means the SSP itself commits to a
-timeline that does NOT meet FedRAMP requirements for critical vulnerabilities.
+**Action**: Align ALL documents to FedRAMP Rev 5. Add KEV/BOD 22-01 14-day requirement.
 
-VE-SC-POL-3 (the policy) actually has the correct 15-day critical timeline but has
-incorrect values for Medium (180d vs 90d required) and Low (360d vs 180d required),
-citing Iron Bank Acceptance Baseline Criteria rather than FedRAMP Rev 5.
-
-**Risk**: HIGH. A 3PAO will compare the SSP control implementation to FedRAMP requirements
-and flag that Critical=30d exceeds the 15-day requirement. They will also find the policy
-and procedure documents disagree with each other and with the SSP. This is a multi-document
-inconsistency that suggests the timelines were not systematically derived from a single
-authoritative source.
-
-**Recommendation**: Establish FedRAMP Rev 5 as the sole authoritative source for
-remediation timelines. Update ALL documents to match:
-- Critical: 15 calendar days
-- High: 30 calendar days
-- Medium: 90 calendar days
-- Low: 180 calendar days
-- KEV-listed: 14 calendar days (BOD 22-01 — see F-4)
-
-**Documents involved**:
-- SSP Appendix A, RA-5(d) implementation (line ~24530 in extracted text)
-- SSP Appendix A, SI-2(3)(b) parameter and implementation (line ~29437, ~29486)
-- `VE-RA-SOP-2_Vulnerability_Management_Procedure.pdf` (Section 5.1.2)
-- `VE-SC-POL-3_Vulnerability_Management_Policy.pdf` (Section 6.3.2)
+Sources: RA-F1, RA-F2, SI-F1 (agents), F-1, F-4 (manual)
 
 ---
 
-## F-2: Vulnerability Justification Timeline Not Reflected in Procedure
+## Theme 3: DR/CP Architecture — Hot Site Fiction
 
-**Severity**: MEDIUM — operationally important, assessor may or may not check
+Multiple HIGH findings across CP controls, ISCP, and DR/BC Plan:
 
-**Finding**: VE-SC-POL-3 (Policy) defines vulnerability *justification* timelines — the
-window to document WHY a vulnerability exists, separate from fixing it:
+- **No consistent RTO/RPO**: At least 4 different RTO values (12h, 24h, 30min, 72h)
+  across ISCP and DR/BC Plan. RPO never explicitly defined at system level.
+- **"Hot Site" claim unsupported**: Both documents say us-gov-west-1 is a hot site.
+  Recovery procedures describe Terraform rebuild from scratch (cold site pattern).
+- **AWS EDR for EKS**: SSP claims 30-minute failover via AWS Elastic Disaster Recovery.
+  EDR is designed for EC2 lift-and-shift, not EKS/Kubernetes workloads.
+- **Velero misclassified**: Listed as "Log aggregation" under Loki in both documents.
+  Its actual role (k8s state backup) is never properly described.
+- **No CP test completed**: Appendix G test report is blank template text. Appendix J
+  test schedule says "N/A". Directly confirms Risk Register Risk #1.
+- **Recovery depends on Confluence**: Procedures reference wiki URLs as primary source.
+  If SaaS unavailable during disaster, recovery team has no instructions.
 
-| Severity | Justification Deadline |
-|----------|----------------------|
-| Critical | 5 calendar days |
-| High | 10 calendar days |
-| Medium | 30 calendar days |
-| Low | 60 calendar days |
+Sources: CP-F2/F3/F4/F5/F6, ISCP-F1 through F6, DRBC-F1 through F3, CROSS-F1/F2
 
-These timelines do not appear in VE-RA-SOP-2 (Procedure), which is the document that
-describes the actual operational workflow. If the policy commits to 5-day justification
-for criticals, the procedure should describe how that happens.
-
-**Risk**: Operationally, nobody will hit a 5-day justification window if the procedure
-doesn't describe the workflow for doing so. An assessor checking policy-to-procedure
-alignment will note the gap.
-
-**Recommendation**: Either add justification workflow steps to VE-RA-SOP-2, or evaluate
-whether these timelines are realistic for VE's team size and adjust the policy accordingly.
-
-**Documents involved**:
-- `VE-SC-POL-3_Vulnerability_Management_Policy.pdf` (Section 6.3.1)
-- `VE-RA-SOP-2_Vulnerability_Management_Procedure.pdf` (missing)
+**Action**: Define single authoritative RTO/RPO. Reclassify as cold site or pre-provision
+resources. Conduct first CP test. Embed procedures in document (not Confluence links).
 
 ---
 
-## F-3: Grype Scanner Not Referenced in SSP or Vulnerability Management Docs
+## Theme 4: Incomplete/Stale Tool References
 
-**Severity**: MEDIUM — SSP should accurately reflect the tools in use
+Pervasive across the entire SSP. Automated sweep confirmed:
 
-**Finding**: The SSP (Table 8.1) and VE-RA-SOP-2 list the following vulnerability scanning
-tools: AWS Inspector, AWS Config, GitHub Dependabot, SonarQube. However, Grype (run via
-the ve-zarf CI pipeline) is the authoritative scanner for infrastructure/container images
-and finds 1,279 findings that Inspector2 misses entirely on those same images. Grype is
-actively in use and produces the most comprehensive container vulnerability data.
+| Issue | Count | Locations |
+|-------|-------|-----------|
+| Inspector/SonarQube mentioned without Grype/Dependabot/Renovate | 53 lines | RA-5, SI-2, SR-2, CA-7, CM-5(6), SA-11, and more |
+| "Terraform" instead of "OpenTofu" | 15 instances | CM-2, CM-3(6), CM-4, SA-10, SR-12 |
+| "Kibana"/"Elasticsearch" instead of Grafana Loki | 7 instances | CA-7, SI-4, Table 8.1 |
+| "lstio" typo (should be "Istio") | 8 instances | SC-8, SC-10, SC-13, SI-3 |
+| "BigBang" instead of "UDS Core" | 2 instances | SSP §8, CMP §3.2.1 |
+| NeuVector missing from Table 8.1 | 1 | SSP Table 8.1 |
+| SonarQube described as SCA tool (it's SAST) | 2 | SR-11, CM-8(3) |
 
-**Risk**: If an assessor asks "what tools do you use for container scanning?" and the answer
-is Inspector2, but the actual data shows Grype is the primary source for infrastructure
-images, there's a credibility gap. Conversely, if Grype findings are presented to an
-assessor, they'll want to see it referenced in the SSP.
-
-**Recommendation**: Add Grype to the scanning tools table in the SSP (Table 8.1) and to
-VE-RA-SOP-2 Section 5.2. Describe the three-scanner model: Inspector2 (ECR/deployed images),
-Grype (SBOM-based, infrastructure/container images), Dependabot (app-layer dependencies).
-
-**Documents involved**:
-- SSP Section 8, Table 8.1
-- `VE-RA-SOP-2_Vulnerability_Management_Procedure.pdf` (Section 5.2)
+**Action**: Global find-and-replace for Terraform→OpenTofu, lstio→Istio,
+Kibana/Elasticsearch→Grafana Loki. Add Grype, Dependabot, Renovate, NeuVector
+to all scanning tool references. Fix SonarQube role description.
 
 ---
 
-## F-4: BOD 22-01 / CISA KEV 14-Day Override Not Addressed in Policy
+## Theme 5: IR Plan Critical Gaps
 
-**Severity**: MEDIUM — FedRAMP explicitly requires this
+The IR Plan (Appendix I) has **5 HIGH findings**:
 
-**Finding**: CISA Binding Operational Directive 22-01 requires remediation of Known
-Exploited Vulnerabilities (KEV) within 14 days, regardless of CVSS severity. FedRAMP
-has confirmed this applies to CSPs. Neither VE-SC-POL-3 nor VE-RA-SOP-2 mention BOD 22-01,
-KEV, or a 14-day override.
+1. **Wrong document ID on every page** — footer says VE-CM-SOP-3 (Config Management!)
+   instead of VE-IR-SOP-1
+2. **1-hour reporting scope too narrow** — conditions on "potential or confirmed loss of
+   CIA" when FedRAMP requires 1-hour for ALL confirmed incidents
+3. **Zero cadence commitments** — no training, testing, or plan review schedule anywhere
+   in the plan, despite IR-2/IR-3/IR-8 requiring these
+4. **CISA/FedRAMP/Agency POC contacts blank** — empty fields in the reporting contacts table
+5. **IR Leader contacts blank** — Jacob and Trent's phone/email not populated
 
-The ConMon plan (VE-CA-SOP-7) references "Security Alerts, Advisories & Directives" as
-an ad-hoc activity (SI-05) but does not specifically call out the KEV 14-day requirement.
+Also: FedRAMP notification checkpoint missing for Minor/Negligible incidents that still
+trigger reporting obligations. Templates have duplicate IDs (two VE-IR-TMP-1). No
+cross-reference to SSP, ConMon Plan, or other VE documents.
 
-**Risk**: If a KEV-listed CVE is discovered and VE follows the standard 30-day Critical
-timeline instead of the 14-day BOD 22-01 timeline, it would be a compliance gap that
-an assessor would flag.
-
-**Recommendation**: Add KEV/BOD 22-01 language to VE-SC-POL-3 and VE-RA-SOP-2 specifying
-that KEV-listed vulnerabilities follow a 14-day remediation timeline regardless of CVSS
-severity. Reference the CISA KEV catalog as a monitoring source.
-
-**Documents involved**:
-- `VE-SC-POL-3_Vulnerability_Management_Policy.pdf`
-- `VE-RA-SOP-2_Vulnerability_Management_Procedure.pdf`
-- `VE-CA-SOP-7_Continuous_Monitoring_Plan.pdf`
+Sources: IRP-F1 through IRP-F5 (doc-9 agent)
 
 ---
 
-## F-5: InfusionPoints SOC/ConMon Role Not Reflected in Documents
+## Theme 6: Aspirational Language vs. Implementation Status
 
-**Severity**: LOW (for now) — will become MEDIUM once InfusionPoints is operational
+Multiple controls have detailed implementation narratives written in present tense
+("Valid Eval has implemented...") while the checkbox says "Planned." This pattern
+appears in: AT-2(2), AT-2(3), CM-4, CM-7, CM-7(1), CM-7(2), CM-7(5), CA-8(2),
+PL-1, SA-1.
 
-**Finding**: InfusionPoints is being onboarded to provide Continuous Monitoring / SOC-as-a-
-Service. None of the current SSP documents reference this vendor or their role. As their
-services come online, the following documents will need updates:
+An assessor will flag these as either: (a) the checkbox is wrong and the control IS
+implemented, or (b) the narrative is aspirational and overstates the current state.
+Either way, the documents need to be reconciled.
 
-- ConMon Plan (VE-CA-SOP-7): Roles & Responsibilities, monitoring activities
-- SSP Table 8.1: Security and Management Technologies
-- SSP Table 7.1: External Systems/Services (if InfusionPoints tools connect to VE infra)
-- SCRM Plan (VE-SR-SOP-1): Vendor evaluation record for InfusionPoints
-
-**Risk**: Low risk now since they're still spooling up. Once operational, an assessor
-would expect to see the SOC provider reflected in the ConMon plan.
-
-**Recommendation**: Track this as a follow-up item for after InfusionPoints is operational.
-Ensure vendor evaluation per VE-SR-SOP-1 Section 5.1 is documented in Jira.
+**Action**: For each control, determine the truth — is it implemented or not?
+Update either the checkbox or the narrative to match reality.
 
 ---
 
-## F-6: ConMon Deliverable Repository Links Are TBD
+## Theme 7: Missing Referenced Documents
 
-**Severity**: LOW — normal for a new SSP, but needs resolution
+7 documents referenced in SSP security controls have no corresponding file in the
+plan content directory:
 
-**Finding**: Every deliverable in VE-CA-SOP-7 Appendix A lists "Link: [Repository Link -
-TBD]" for the designated repository where deliverables are submitted to the AO.
+| Document ID | Referenced In | Description |
+|-------------|---------------|-------------|
+| VE-AC-SOP-8 | AC-2 | External System Integration Procedure |
+| VE-CA-SOP-2 | CA-7 | Continuous Threat Monitoring Procedure |
+| VE-CM-SOP-5 | CM-10 | Software and Tooling Inventory |
+| VE-IA-SOP-2 | IA-4 | Identifier Assignment Tracking |
+| VE-IA-SOP-3 | IA-12 | Identity Verification Process |
+| VE-PL-SOP-3 | PL-2 | FIPS 199 Categorization Report |
+| VE-RA-OPS-1 | RA-9, SI-2(6) | Criticality Analysis / System Inventory |
 
-**Risk**: Without a designated repository, there's no defined mechanism for delivering
-ConMon artifacts to the AO. This is expected for a pre-ATO SSP but should be resolved
-as the authorization process progresses.
+Additionally, VE-CM-INV-2 (Software Inventory) contains archived entries and is
+missing actively-used tools (Grype, Renovate, Zarf, Flux, OpenTofu, crane).
 
-**Recommendation**: Establish the ConMon deliverable repository (likely a FedRAMP
-repository or shared location agreed with the sponsoring agency) and update all
-references in VE-CA-SOP-7 Appendix A.
-
----
-
-## F-7: Vulnerability Scanning Frequency Inconsistency
-
-**Severity**: LOW — both are defensible, but should be consistent
-
-**Finding**: VE-SC-POL-3 (Policy) Section 6.1.2 states scanning should be performed "at
-a minimum quarterly." VE-RA-SOP-2 (Procedure) Section 5.2.1 states "at a minimum monthly."
-The ConMon plan commits to monthly scan submissions to the AO.
-
-Actual practice exceeds both: internal tools (Inspector2, Dependabot, Grype in CI) run
-daily or on every build.
-
-**Risk**: Minor inconsistency. The procedure and ConMon plan are more restrictive (monthly)
-which is fine. The policy saying "quarterly" could be read as allowing less frequent
-scanning than what the ConMon plan commits to.
-
-**Recommendation**: Align the policy minimum to "monthly" to match the procedure and
-ConMon plan. Note that actual practice exceeds this minimum.
-
-**Documents involved**:
-- `VE-SC-POL-3_Vulnerability_Management_Policy.pdf` (Section 6.1.2)
-- `VE-RA-SOP-2_Vulnerability_Management_Procedure.pdf` (Section 5.2.1)
-- `VE-CA-SOP-7_Continuous_Monitoring_Plan.pdf` (Appendix A)
+**Action**: Either create these documents or update the SSP references. An assessor
+will request every referenced document.
 
 ---
 
-## F-8: SSP Appendix A Version Mismatch with SSP Main Body
+## Theme 8: Role/Terminology Inconsistencies
 
-**Severity**: LOW — minor, but an assessor may note it
-
-**Finding**: The SSP main body is version 1.0 (dated 12/4/2024). Appendix A (Security
-Controls) is version 0.8 (dated 12/31/2024). The appendix is newer but has a lower
-version number, suggesting it may not have been finalized alongside the main body.
-
-**Risk**: An assessor may question whether Appendix A is the final version or a draft.
-The v0.8 designation suggests it was still being refined when the SSP was submitted.
-
-**Recommendation**: Align version numbers during the current review cycle.
-
-**Documents involved**:
-- SSP main body (v1.0, 12/4/2024)
-- SSP Appendix A (v0.8, 12/31/2024)
+- **CAB vs CCB**: Change Management Policy uses "CAB" (14 instances). Configuration
+  Management Plan uses "CCB" (11 instances). Same body (CEO + CTO).
+- **SecOps Group**: Referenced 19 times but never defined. With InfusionPoints not yet
+  operational, unclear who this is.
+- **SIEM**: Variously described as "Kibana," "Elasticsearch Kibana," "SIEM solutions,"
+  and "Grafana." No single authoritative SIEM product identified.
+- **AO role confusion**: CA-6 positions the ISO as the authorizing official. In FedRAMP,
+  the AO is the government agency or JAB representative, not the CSP's ISO.
+- **Separation of duties**: 10 roles defined for <20 people. No compensating controls
+  documented for unavoidable role overlap.
+- **"VR-" typos**: IR-5 uses "VR-IR-TMP-5" and "VR-IR-TMP-1" instead of "VE-" prefix.
 
 ---
 
-## F-9: SSP References NeuVector But Not in Security Tools Table
+## Theme 9: Crypto and Authentication
 
-**Severity**: LOW — completeness issue
-
-**Finding**: The CA-7 implementation narrative (Part b) mentions "NeuVector is incorporated
-for container security" but NeuVector does not appear in Table 8.1 (Security and Management
-Technologies). If NeuVector is deployed, it should be in the tools inventory. If it is NOT
-deployed (aspirational language), the SSP should not claim it.
-
-**Risk**: An assessor asking about container security tooling may reference this claim.
-If NeuVector is not actually deployed, this is a misrepresentation.
-
-**Recommendation**: Either add NeuVector to Table 8.1 (if deployed) or remove the
-reference from the CA-7 narrative (if not deployed). Verify actual deployment status.
-
-**Documents involved**:
-- SSP Appendix A, CA-7 Part b implementation narrative
-- SSP Table 8.1 (Security and Management Technologies)
+- **Phishing-resistant MFA not addressed**: FedRAMP now requires phishing-resistant MFA.
+  SSP describes TOTP/virtual MFA which does NOT qualify. Hardware FIDO2/WebAuthn or PIV
+  required. (IA-F1)
+- **PIV acceptance claimed but possibly aspirational**: IA-8(1) says Keycloak supports
+  PIV authentication with FIPS 201 validation. Needs verification. (IA-F13)
+- **IAL3 claimed for privileged roles**: May overstate the identity proofing process for
+  a small company. (IA-F15)
+- **CMVP certificate #4631**: Referenced for SSM endpoints but may be Historical status.
+  Needs verification against NIST CMVP site. (CRYPTO-F1)
+- **"Other" crypto section empty**: Appendix Q has no entries for MFA, code signing,
+  or integrity hashing despite VE using these capabilities. (CRYPTO-F5)
+- **TLS 1.1 referenced**: Multiple Appendix Q entries include "TLS 1.1 or earlier" as
+  an option. Must be clearly marked as NOT in use. (CRYPTO-F3)
+- **FIPS 140-2 vs 140-3**: Inconsistent references across documents. (MP-F10)
 
 ---
 
-## F-10: SSP Scanning Frequency Inconsistency with ConMon Plan
+## Theme 10: Document-Specific Findings (Not Covered Above)
 
-**Severity**: LOW — the more frequent commitment is the one that matters
+### MP/PE Family
+- Systematic "Service Provider Corporate" over-marking on facility controls where VE
+  has no facility (PE-F10 — affects ~17 controls)
+- Endpoint media gaps: MP-4, MP-6, MP-7 say "no control responsibility" despite VE
+  having employee laptops that store/process data
+- PE-17 (Alternate Work Site) incorrectly marked as inherited from AWS — it's purely VE
 
-**Finding**: The SSP's CA-7 Part a states "regular bi-weekly vulnerability scans" as a
-monitored metric. The ConMon plan commits to monthly scan submission to the AO. The
-Vulnerability Management Policy says quarterly minimum. Actual practice (Inspector2,
-Dependabot, Grype) is continuous/daily.
+### SA Family
+- GitHub not FedRAMP authorized but used extensively — no documented risk acceptance (SA-F4)
+- Nightwatch e2e testing described as "DAST" — it's functional testing, not DAST (SSDLC-F1)
+- NIST SP 800-31 cited instead of 800-30 (SA-F8)
+- Section 889 NDAA cited as "Section 899" (SA-F3)
 
-All three are defensible since "at least" language applies, but the SSP's "bi-weekly"
-creates a specific commitment that's different from the monthly cadence in the ConMon plan.
+### MA Family
+- AWS SSM Session Manager (actual remote access tool) never mentioned; VPN referenced
+  instead (MA-F13, MA-F14)
+- MA-4(3) and MA-4(6) are HIGH-baseline controls voluntarily included — creates
+  unnecessary audit obligations (MA-F10, MA-F12)
 
-**Risk**: Minor. The monthly ConMon deliverable is the binding commitment. An assessor
-is unlikely to hold VE to the bi-weekly claim specifically, but consistency across
-documents is always better.
+### Audit Procedure (VE-AU-SOP-1)
+- No defined log review frequency (AUS-F6)
+- References VE-AU-SOP-3 as parent policy with wrong naming convention (AUS-F1)
+- Log pipeline (app→Loki→S3) not described (AUS-F3)
 
-**Recommendation**: Align language. Consider stating scanning is "continuous" with
-"results compiled and submitted monthly" to match actual practice and the ConMon plan.
+### Vendor Notification (VE-SR-SOP-2)
+- No response SLA beyond 1-day acknowledgment (VNT-F2)
+- No cross-reference to VE-SR-SOP-1 or VE-IR-SOP-1 for escalation (VNT-F3)
 
-**Documents involved**:
-- SSP Appendix A, CA-7 Part a
-- VE-CA-SOP-7 Appendix A (monthly scan submission)
-- VE-SC-POL-3 §6.1.2 (quarterly minimum)
-
----
-
-## F-11: SSP Supply Chain Control References Only Inspector + SonarQube
-
-**Severity**: MEDIUM — supply chain controls should reflect actual tooling
-
-**Finding**: The SR-2 implementation (Part a) states supply chain risks are managed with
-"continuous, automated vulnerability scanning using AWS Inspector and SonarQube." This
-omits Grype (primary infrastructure image scanner), Dependabot (app-layer dependencies),
-and Renovate (automated dependency updates) — all of which are actively used and central
-to VE's actual supply chain risk management.
-
-This is the same class of issue as F-3 (Grype not in SSP) but specifically in the supply
-chain controls section, where accurate tooling descriptions are most important.
-
-**Risk**: A supply chain-focused assessor will ask what tools VE uses. The SSP answer
-(Inspector + SonarQube) doesn't match reality (Inspector + Grype + Dependabot + Renovate +
-SonarQube). This undermines credibility in an area of increasing FedRAMP focus.
-
-**Recommendation**: Update SR-2 and SR-3 implementations to reference the full tooling set.
-Describe the three-scanner model and Renovate's role in automated dependency management.
-
-**Documents involved**:
-- SSP Appendix A, SR-2 Part a implementation
-- SSP Appendix A, SR-3 implementation
+### Risk Register (VE-RA-SOP-3)
+- Static since 12/7/2024. All 11 risks Open. No evidence of updates. (F-19)
 
 ---
 
-## F-12: SSP POA&M Appendix Listed as "To be completed"
+## Automated Sweep Results
 
-**Severity**: MEDIUM — expected for initial SSP, but needs tracking
-
-**Finding**: Appendix O (POA&M) is listed as "To be completed" in the SSP appendices table
-(Table 12.1). This is normal for a pre-authorization SSP, but the ConMon plan commits to
-monthly POA&M updates to the AO.
-
-**Risk**: If VE is in ConMon (post-authorization), the POA&M must exist. If pre-authorization,
-this is expected. Need to clarify VE's current authorization status.
-
-**Recommendation**: Establish the POA&M document. The compliance OS is designed to help
-generate and maintain POA&M entries from vulnerability finding dispositions.
-
-**Documents involved**:
-- SSP Table 12.1 (Appendix O: "To be completed")
-- VE-CA-SOP-7 (commits to monthly POA&M submission)
-
----
-
-## F-13: SBOM Per-PR Diff Alerting Claim May Overstate Implementation
-
-**Severity**: MEDIUM — supply chain controls are an increasing focus area
-
-**Finding**: SSP Appendix A, SR-11 implementation (Part a) states: "Software Bill of
-Materials (SBOM) creation on each pull request that includes hash digests for software
-dependencies with automated comparison with the last known SBOM to identify and alert
-on changes."
-
-Actual implementation: ve-zarf generates SBOMs during the GitHub Actions bundle build
-process. This satisfies SBOM generation. However, the "automated comparison with the
-last known SBOM to identify and alert on changes" part describes a specific per-PR diff
-and alerting capability that may not be fully implemented as described.
-
-**Risk**: If an assessor asks to see the SBOM diff alerting in action, and it doesn't
-exist as described, this would be a partial implementation rather than "Implemented" as
-marked. SR-3 is marked ☒ Implemented.
-
-**Recommendation**: Verify whether the per-PR SBOM comparison and alerting is actually
-implemented. If not, either implement it (GitHub Actions can do this with tools like
-`anchore/sbom-action` or `CycloneDX` diff) or adjust the SSP language to accurately
-describe what IS implemented (SBOM generation during bundle builds + Dependabot for
-dependency change alerting).
-
-**Documents involved**:
-- SSP Appendix A, SR-11 Part a implementation (line ~32296)
-- SSP Appendix A, SR-3 Part b implementation
+| Pattern | Instances | Action |
+|---------|-----------|--------|
+| "Planned" checkboxes | ~16 controls | POA&M entries required |
+| "Partially Implemented" checkboxes | ~19 controls | POA&M entries required |
+| "Terraform" (not OpenTofu) | 15 | Global replace |
+| "lstio" (should be Istio) | 8 | Global replace |
+| "Kibana"/"Elasticsearch" | 7 | Replace with Grafana Loki |
+| "BigBang" | 2 | Replace with UDS Core |
+| Inspector/SonarQube without Grype | 53 lines | Add Grype/Dependabot/Renovate |
+| "SecOps" (undefined) | 19 | Define or replace |
+| "CAB" | 14 | Standardize with CCB |
+| "CCB" | 11 | Standardize with CAB |
+| "VR-" prefix (should be "VE-") | 2 | Fix |
+| Missing referenced documents | 7 | Create or fix references |
+| Blank checkboxes (rendering) | ~15 controls | Verify and fix in source |
 
 ---
 
-## F-14: Separation of Duties Table Lists 10 Roles for <20 Person Company
+## Priority Action Items for SSP Review
 
-**Severity**: LOW — not inherently wrong, but an assessor may probe
+### Must Fix Before Assessment (HIGH)
 
-**Finding**: Table 11.1 (Separation of Duties) defines 10 distinct roles: Information
-Owner, Security Officer, Privacy Officer, Cloud Admin, System Admin, Network Admin,
-Application Admin, Software Engineer, QA Engineer, DevOps, Security Team.
+1. **Remediation timelines**: Align all documents to FedRAMP Rev 5 (Critical=15d). Add KEV 14d.
+2. **POA&M**: Create entries for all ~35 Planned/Partially Implemented controls.
+3. **CP test**: Conduct first test, document results in Appendix G.
+4. **RTO/RPO**: Define single authoritative values. Reclassify site type.
+5. **IR Plan**: Fix document ID (VE-CM-SOP-3→VE-IR-SOP-1), populate contacts, add cadences.
+6. **IR Plan reporting**: Remove CIA-loss qualifier from 1-hour reporting scope.
+7. **Phishing-resistant MFA**: Document migration plan or current implementation.
+8. **Missing documents**: Create or fix references for 7 missing documents.
+9. **AT-4 training records**: Implement tracking before assessment.
 
-For a company with fewer than 20 employees, several of these roles are necessarily filled
-by the same individuals. The SSP should clearly document the role-to-person mapping and
-explain how separation of duties is maintained when one person holds multiple roles.
+### Should Fix (MEDIUM)
 
-**Risk**: An assessor will ask "who fills the Security Officer role?" and "who fills the
-Cloud Admin role?" If the answer is the same person (or a small overlap), they'll want
-to see compensating controls for the lack of separation. This is expected and normal for
-small companies but needs to be explicitly addressed.
+10. **Tool references**: Global updates for Terraform, Kibana, BigBang, lstio, scanner tools.
+11. **Aspirational narratives**: Reconcile "Planned" status with present-tense narratives.
+12. **CAB/CCB/SecOps/AO terminology**: Standardize across all documents.
+13. **Velero documentation**: Properly describe its backup role in DR/BC and ISCP.
+14. **GitHub risk acceptance**: Document the risk decision for using non-FedRAMP service.
+15. **Software inventory**: Remove archived entries, add active tools.
+16. **Risk register**: Conduct review, update statuses, add new risks.
+17. **Separation of duties**: Add role-to-person mapping with compensating controls.
+18. **Recovery procedures**: Embed in documents (not Confluence links).
+19. **DAST gap**: Either add actual DAST tool or reframe Nightwatch honestly.
+20. **Appendix Q "Other" section**: Populate with MFA, signing, hashing entries.
 
-**Recommendation**: Add a role-to-person mapping to the SSP or a supporting document that
-shows which individuals hold which roles. Document any cases where one person holds
-multiple roles and the compensating controls in place (e.g., audit logging, peer review
-requirements, approval workflows).
+### Nice to Fix (LOW)
 
-**Documents involved**:
-- SSP Table 11.1 (Separation of Duties)
-
----
-
-## F-15: SSP Claims "Threat Intelligence Feed Monitoring" — Verify Implementation
-
-**Severity**: LOW — but claims should match reality
-
-**Finding**: SR-3 Part b states VE is "actively monitoring threat intelligence feeds for
-Valid Eval system components" and "passive monitoring of security advisories received via
-email by vendors and maintainers." The CA-7 implementation also references comprehensive
-threat detection.
-
-The actual mechanism for threat intelligence appears to be: CISA advisories (not
-systematically monitored — see F-4), Dependabot alerts (automated), and vendor emails
-(ad-hoc). There is no dedicated threat intelligence feed subscription or monitoring tool.
-
-**Risk**: LOW. "Passive monitoring of security advisories via email" is accurate and
-defensible. The "actively monitoring threat intelligence feeds" claim is stronger and
-may not be fully substantiated. InfusionPoints SOC may cover this once operational.
-
-**Recommendation**: Once InfusionPoints is operational, update SR-3 to reference their
-threat intelligence capabilities. In the interim, ensure the language matches actual
-practice — "monitoring CISA advisories and vendor security notifications" is accurate
-and sufficient.
-
-**Documents involved**:
-- SSP Appendix A, SR-3 Part b implementation
-- SSP Appendix A, CA-7 implementation
+21. Typos: lstio, Grafrana, "principal"→"principle", Section 899→889, etc.
+22. Duplicate paragraphs in MP controls.
+23. Checkbox rendering issues (~15 controls).
+24. Copyright date inconsistencies in IR templates.
+25. "master branch"→"main branch" in CM-5(6).
 
 ---
 
-## Controls Reviewed Without Findings
+## Methodology Notes
 
-The following controls were reviewed and found to be consistent, accurately described,
-and without material issues:
+This review was conducted through:
+1. Manual reading of SSP core sections (1-12), ConMon Plan, Vuln Mgmt Policy/Procedure,
+   SCRM Plan, Access Audit Procedure, CMP, Risk Register, Software Inventory, MDM Policy,
+   Host-Based Protections document
+2. 17 parallel AI agent reviews of all Appendix A control families and supporting documents
+3. Automated grep sweeps for systematic patterns across the full 47K-line SSP text
+4. Cross-reference of 89 VE-XX-XXX document IDs against the plan content directory
 
-- **AC-2 (Account Management)**: Comprehensive, accurately describes AWS IAM Identity
-  Center, application roles (Organizer/Judge/Navigator/Team/Admin/SuperAdmin), and
-  Keycloak. Quarterly privileged / annual non-privileged review cadence matches calendar.
-- **AT-2 (Security Awareness Training)**: Describes module-based online training, phishing
-  campaigns, tabletop exercises. Cadence: initial hire + annual. Appropriate for FedRAMP Moderate.
-- **CP-4 (Contingency Plan Testing)**: Describes walkthrough, tabletop, standalone, and
-  partial integration test types. Annual cadence. Consistent with ConMon plan.
-- **IR-4 (Incident Handling)**: Well-structured NIMS-aligned ICS model. Post-mortem process
-  described. Consistent with IR plan reference.
-- **CM-8 (System Component Inventory)**: Uses AWS Systems Manager + package manager files.
-  Monthly review cadence. Detailed field requirements. Consistent with ConMon deliverables.
+Agent outputs are preserved in `~/.claude/supply-chain-skill-development/ssp-review-workspace/output/`
+for verification against source text. All HIGH findings include SSP quotes with approximate
+line numbers for traceability.
 
----
-
-## F-16: Configuration Management Plan References "BigBang" (Superseded by UDS Core)
-
-**Severity**: MEDIUM — reflects an outdated architecture understanding
-
-**Finding**: VE-CM-SOP-3 (Appendix H) §3.2.1 lists "Bigbang" as a component tracked
-for baseline configurations. BigBang has been replaced by UDS Core from Defense Unicorns.
-The CMP should reference UDS Core, not BigBang.
-
-Additionally, §3.4.1 (Monitoring Tools) only mentions AWS Inspector for vulnerability
-scanning — same incomplete tooling reference pattern as F-3 and F-11.
-
-**Recommendation**: Update CMP to reference UDS Core instead of BigBang. Add Grype and
-Dependabot to the monitoring tools section.
-
-**Documents involved**:
-- VE-CM-SOP-3 (Appendix H) §3.2.1 and §3.4.1
-
----
-
-## F-17: Software & Tooling Inventory Contains Archived/Deprecated Entries
-
-**Severity**: LOW — inventory accuracy, easy to fix
-
-**Finding**: VE-CM-INV-2 (Software & Tooling Inventory) includes several items that
-are no longer in active use or whose repos have been archived:
-- **administrate-field-ckeditor**: Repo archived 2026-03-04
-- **react-dropzone-s3-uploader**: Repo archived 2026-03-04
-- **Kohana PHP Framework**: Legacy, likely no longer in use
-- **WSC CKEditor Plugin**: May be related to the archived administrate-field-ckeditor
-
-Additionally, the inventory does NOT include several tools actively in use:
-Grype, Renovate, Zarf, Flux, OpenTofu/Terraform, crane.
-
-**Recommendation**: Remove archived entries and add all actively-used tools during the
-annual review. Cross-reference against the org repo inventory.
-
-**Documents involved**:
-- VE-CM-INV-2 (Software & Tooling Inventory)
-
----
-
-## F-18: CAB vs CCB Terminology Inconsistency
-
-**Severity**: LOW — cosmetic but could confuse assessors
-
-**Finding**: VE-CM-POL-5 uses "Change Authorization Board (CAB)." VE-CM-SOP-3 uses
-"Configuration Control Board (CCB)." SSP Appendix A CM-6 uses "CAB." These appear to
-refer to the same body (CEO + CTO per CMP §2.2.1).
-
-**Recommendation**: Pick one term and use it consistently across all documents.
-
-**Documents involved**:
-- VE-CM-POL-5 §5.1, VE-CM-SOP-3 §2.2.1, SSP Appendix A CM-6 Part b
-
----
-
-## F-19: Risk Register is Static — No Evidence of Ongoing Updates
-
-**Severity**: MEDIUM — risk register must be a living document
-
-**Finding**: VE-RA-SOP-3 (Risk Register) v1.0 dated 2024-12-07 contains 11 risks, all
-with status "Open" and no evidence of updates since initial creation. The Risk Management
-Plan requires risks to be "regularly reviewed" with "regular risk management team meetings."
-
-For a living register, an assessor expects: updated statuses, new risks added since
-creation, evidence of periodic review, and mitigation progress notes.
-
-Notable risks directly relevant to our work:
-- Risk #1 (High): "Delay in recovery due to undocumented/untested backup procedures"
-- Risk #5 (Moderate): "Exploitation of unpatched vulnerabilities in public components"
-
-**Recommendation**: Establish quarterly risk register review. Add risks from our supply
-chain investigation. Update mitigation statuses to reflect current state.
-
-**Documents involved**:
-- VE-RA-SOP-3 (Risk Register)
-- VE-RA-SOP-4 (Risk Management Plan) §5
-
----
-
-## F-20: NeuVector IS in Software Inventory (Partial Resolution of F-9)
-
-**Severity**: Informational — updates F-9
-
-**Finding**: NeuVector appears in VE-CM-INV-2 as a licensed component (Apache v2.0,
-vendor SUSE). Confirms it IS part of the authorized baseline — ships with UDS Core.
-F-9 remains valid: should also be added to SSP Table 8.1.
-
----
-
-## Controls and Documents Reviewed Without Findings (Cumulative)
-
-**Appendix A Security Controls**:
-- AC-2: Comprehensive. Quarterly privileged / annual non-privileged access review.
-- AT-2: Module-based + phishing + tabletops. Initial + annual cadence.
-- CP-4: Multiple test types. Annual cadence.
-- IR-4: NIMS/ICS-aligned. Post-mortem process. Well-structured.
-- CM-6: CIS baselines, AWS Config monitoring.
-- CM-7: Port/protocol management documented.
-- CM-8: AWS Systems Manager + package managers. Monthly review.
-- SR-2: Matches VE-SR-SOP-1. Annual review.
-- SR-3: SBOM, SSDLC, network segmentation, code review.
-- Appendix Q: FIPS-validated (AWS-LC #4816, Chainguard OpenSSL 3.0). Current (v1.1, Jan 2025).
-
-**Supporting Documents**:
-- VE-SR-SOP-1 (SCRM Plan): Well-structured. Monthly check-ins, annual re-evaluation.
-- VE-AC-SOP-10 (Access Audit): Concrete step-by-step for AWS IAM + VE app.
-- VE-AT-SOP-1 (Training): Role-based. Initial + annual. Three tiers (Leadership/Privileged/Normal).
-- VE-RA-SOP-4 (Risk Management Plan): Solid framework. 5x5 risk matrix.
-- VE-CM-POL-5 (Change Management): CAB process, impact analysis, testing.
-- VE-CM-SOP-7 (Config Management Procedures): Baselining, change control, monitoring.
-- VE-SI-SOP-1 (System Integrity): Logging, hardening, patch management.
-- VE-AC-POL-5 (MDM Policy): Comprehensive. Enrollment, security, remote wipe.
-- VE-SR-SOP-3 (SBOM): Actual package inventory exists (Ruby gems confirmed).
-- VE-CM-INV-2 (Software Inventory): 40+ components tracked with license details.
-- VE_Host-Based_Protections: Inspector agent confirmed on all prod EC2 instances.
-- VE-RA-SOP-3 (Risk Register): 11 risks identified. Framework solid (findings in F-19).
-
-## Remaining Items for Future Review
-
-- IR Plan (Appendix I, 2919 lines) — exercise schedule, templates, notification timelines
-- DR/BC Plan (VE-SC-SOP-2, 2269 lines) — RPO/RTO, recovery procedures, exercise schedule
-- Appendix G (ISCP, 1854 lines) — full contingency plan details
-- AU-SOP-1 (Audit & Accountability) — log retention specifics, review cadence
-- VE-SR-SOP-2 (Vendor Notification Tracking) — vendor communication procedures
-- SA-POL-2 (SSDLC Policy) — secure development practices
-- ~30 remaining individual policy documents (mostly lower priority)
+**Limitations**: Agent findings have not been individually verified against source PDF
+(only text extraction was reviewed). Checkbox rendering issues may be extraction artifacts
+rather than actual document gaps — verify against the Word/PDF source. CMVP certificate
+statuses were not verified against the NIST website.
