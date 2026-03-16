@@ -350,7 +350,15 @@ Agent outputs are preserved in `~/.claude/supply-chain-skill-development/ssp-rev
 for verification against source text. All HIGH findings include SSP quotes with approximate
 line numbers for traceability.
 
-**Limitations**: Agent findings have not been individually verified against source PDF
-(only text extraction was reviewed). Checkbox rendering issues may be extraction artifacts
-rather than actual document gaps — verify against the Word/PDF source. CMVP certificate
-statuses were not verified against the NIST website.
+**Verification**: 18 findings spot-checked against source PDFs (Appendix A, IR Plan,
+ISCP) with **100% accuracy rate** — zero false positives. Verified findings include:
+Planned/Partially Implemented checkboxes (AT-2(2), AT-2(3), CM-4), remediation timelines
+(RA-5(d) Critical=30d), tool references (Grype missing, Terraform stale), IR Plan
+document ID error (VE-CM-SOP-3 on every page), blank contacts (IR Plan, ISCP), blank
+CP test report (ISCP Appendix F), and multiple "N/A" appendices in ISCP. Checkbox
+rendering in the PDF is clean (☒/☐), confirming that controls flagged as having "blank
+checkboxes" by agents are likely real source document issues, not extraction artifacts.
+
+**Remaining unverified**: CMVP certificate statuses (#4631, #4177, #4816, #4856) not
+checked against NIST website. ~15 controls with blank/unreadable checkboxes not individually
+confirmed in source PDF. Individual LOW-severity findings (typos, formatting) not spot-checked.
