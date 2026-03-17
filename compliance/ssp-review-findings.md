@@ -22,6 +22,11 @@ system are more serious than they would be for a pre-authorization SSP. The SSP
 appears to have been written as a pre-authorization document but VE is past that stage
 for NASA.
 
+**InfusionPoints SOC** went live ~2026-03-09 (M-F 8-5 ET). Graylog SIEM operational.
+**NeuVector replaced by Falco** as of UDS v0.56 — SSP references are stale.
+**Keycloak PIV/CAC** is live with NASA Launchpad as IdP.
+**All 20 open questions answered** — see `open-questions.md` for full details.
+
 ---
 
 ## Executive Summary
@@ -125,21 +130,28 @@ Multiple HIGH findings across CP controls, ISCP, and DR/BC Plan:
 
 - **No consistent RTO/RPO**: At least 4 different RTO values (12h, 24h, 30min, 72h)
   across ISCP and DR/BC Plan. RPO never explicitly defined at system level.
-- **"Hot Site" claim unsupported**: Both documents say us-gov-west-1 is a hot site.
-  Recovery procedures describe Terraform rebuild from scratch (cold site pattern).
-- **AWS EDR for EKS**: SSP claims 30-minute failover via AWS Elastic Disaster Recovery.
-  EDR is designed for EC2 lift-and-shift, not EKS/Kubernetes workloads.
-- **Velero misclassified**: Listed as "Log aggregation" under Loki in both documents.
-  Its actual role (k8s state backup) is never properly described.
-- **No CP test completed**: Appendix G test report is blank template text. Appendix J
-  test schedule says "N/A". Directly confirms Risk Register Risk #1.
+- **"Hot Site" claim FALSE**: Both documents say us-gov-west-1 is a hot site.
+  **CONFIRMED**: us-gov-west-1 has minimal infrastructure. This is a cold site at best.
+  Recovery procedures describe Terraform rebuild from scratch (confirms cold site).
+- **AWS EDR NOT configured**: SSP claims 30-minute failover via AWS EDR. **CONFIRMED**:
+  EDR is not configured and not relevant for EKS (cluster autoscaling handles node
+  recovery). The 30-minute RTO claim is unsupported.
+- **Velero NOT in use**: Listed as "Log aggregation" under Loki in both documents.
+  **CONFIRMED**: Velero is not deployed. Actual backup: nightly cron job backing up
+  Neo4j + PostgreSQL to S3 (recovery demonstrated). Infrastructure rebuilt via OpenTofu.
+- **CP test partially done**: Appendix G test report is blank. **HOWEVER**: Jacob
+  conducted a tabletop exercise with Dr. Damian (NASA). This should be documented
+  retroactively in Appendix F. A more formal exercise with Rule4 should be scheduled.
 - **Recovery depends on Confluence**: Procedures reference wiki URLs as primary source.
   If SaaS unavailable during disaster, recovery team has no instructions.
 
 Sources: CP-F2/F3/F4/F5/F6, ISCP-F1 through F6, DRBC-F1 through F3, CROSS-F1/F2
 
-**Action**: Define single authoritative RTO/RPO. Reclassify as cold site or pre-provision
-resources. Conduct first CP test. Embed procedures in document (not Confluence links).
+**Action**: Define single authoritative RTO/RPO. Reclassify as cold site. Remove AWS EDR
+and Velero references. Document actual backup approach (nightly DB dumps to S3 + IaC
+rebuild). Document the existing tabletop exercise in Appendix F. Schedule formal CP test
+with Rule4. Embed procedures in document (not Confluence links). Plan us-gov-west-1
+pre-provisioning for when ATO sponsorship is confirmed.
 
 ---
 
@@ -151,15 +163,22 @@ Pervasive across the entire SSP. Automated sweep confirmed:
 |-------|-------|-----------|
 | Inspector/SonarQube mentioned without Grype/Dependabot/Renovate | 53 lines | RA-5, SI-2, SR-2, CA-7, CM-5(6), SA-11, and more |
 | "Terraform" instead of "OpenTofu" | 15 instances | CM-2, CM-3(6), CM-4, SA-10, SR-12 |
-| "Kibana"/"Elasticsearch" instead of Grafana Loki | 7 instances | CA-7, SI-4, Table 8.1 |
+| "Kibana"/"Elasticsearch" instead of Graylog (SIEM) / Grafana Loki (app logs) | 7 instances | CA-7, SI-4, Table 8.1 |
 | "lstio" typo (should be "Istio") | 8 instances | SC-8, SC-10, SC-13, SI-3 |
 | "BigBang" instead of "UDS Core" | 2 instances | SSP §8, CMP §3.2.1 |
-| NeuVector missing from Table 8.1 | 1 | SSP Table 8.1 |
+| **"NeuVector" instead of "Falco"** | multiple | CA-7, MA-4(3), SI-16, software inventory, Table 8.1 |
+| "Cloudflare for Government" (not deployed) | 2 instances | SC-5, SC-7 |
+| "Velero" (not used; actual: cron DB backups to S3 + IaC rebuild) | multiple | CP controls, ISCP, DR/BC Plan |
+| "AWS EDR" (not configured, not relevant for EKS) | 1 instance | CP-7 |
+| NeuVector missing from Table 8.1 | 1 | SSP Table 8.1 — should be **Falco** |
 | SonarQube described as SCA tool (it's SAST) | 2 | SR-11, CM-8(3) |
 
 **Action**: Global find-and-replace for Terraform→OpenTofu, lstio→Istio,
-Kibana/Elasticsearch→Grafana Loki. Add Grype, Dependabot, Renovate, NeuVector
-to all scanning tool references. Fix SonarQube role description.
+NeuVector→Falco, Kibana/Elasticsearch→Graylog (SIEM) or Grafana Loki (app logs).
+Remove Cloudflare references (use AWS Shield/WAF instead). Remove Velero references
+(document actual backup approach: nightly DB dumps to S3 + IaC rebuild). Remove AWS
+EDR reference. Add Grype, Dependabot, Renovate, Falco to all scanning tool references.
+Fix SonarQube role description.
 
 ---
 
@@ -227,10 +246,11 @@ will request every referenced document.
 
 - **CAB vs CCB**: Change Management Policy uses "CAB" (14 instances). Configuration
   Management Plan uses "CCB" (11 instances). Same body (CEO + CTO).
-- **SecOps Group**: Referenced 19 times but never defined. With InfusionPoints not yet
-  operational, unclear who this is.
+- **SecOps Group**: Referenced 19 times but never defined. **ANSWERED**: Jacob + Devon +
+  InfusionPoints (M-F 8-5 ET, expanding to 24/7 post-ATO sponsorship). Update all refs.
 - **SIEM**: Variously described as "Kibana," "Elasticsearch Kibana," "SIEM solutions,"
-  and "Grafana." No single authoritative SIEM product identified.
+  and "Grafana." **ANSWERED**: Graylog is the SIEM (feeds InfusionPoints SOC). Grafana
+  Loki is app-level log aggregation (UDS Core). Update all Kibana/ES references.
 - **AO role confusion**: CA-6 positions the ISO as the authorizing official. In FedRAMP,
   the AO is the government agency or JAB representative, not the CSP's ISO.
 - **Separation of duties**: 10 roles defined for <20 people. No compensating controls
@@ -241,13 +261,15 @@ will request every referenced document.
 
 ## Theme 9: Crypto and Authentication
 
-- **Phishing-resistant MFA not addressed**: FedRAMP now requires phishing-resistant MFA.
-  SSP describes TOTP/virtual MFA which does NOT qualify. Hardware FIDO2/WebAuthn or PIV
-  required. (IA-F1)
-- **PIV acceptance claimed but possibly aspirational**: IA-8(1) says Keycloak supports
-  PIV authentication with FIPS 201 validation. Needs verification. (IA-F13)
-- **IAL3 claimed for privileged roles**: May overstate the identity proofing process for
-  a small company. (IA-F15)
+- **Phishing-resistant MFA gap**: TOTP/virtual MFA (Google Authenticator) is the current
+  mechanism. TOTP is NOT phishing-resistant (vulnerable to real-time proxy attacks).
+  **Migration plan**: Moving auth into Keycloak will enable FIDO2/WebAuthn support.
+  This should be a POA&M item with milestones. No SMS/email MFA is used (good). (IA-F1)
+- **PIV/CAC is live**: IA-8(1) CONFIRMED — Keycloak supports PIV/CAC via NASA Launchpad
+  IdP integration (currently live). Other agency IdP integrations pending. (IA-F13 resolved)
+- **IAL3 via federated authentication**: IAL3 is achieved through agency IdP integration
+  (e.g., PIV/CAC via NASA Launchpad), not VE's own identity proofing. SSP should clarify
+  that IAL3 is inherited from the agency's process. Also required for SuperAdmin. (IA-F15)
 - **CMVP certificate #4631**: Referenced for SSM endpoints but may be Historical status.
   Needs verification against NIST CMVP site. (CRYPTO-F1)
 - **"Other" crypto section empty**: Appendix Q has no entries for MFA, code signing,
