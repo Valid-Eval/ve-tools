@@ -31,9 +31,10 @@ for NASA.
 
 ## Executive Summary
 
-**264 raw findings** identified across the full SSP v1.0, Appendix A v0.8, and ~30
-supporting policy/procedure documents. After dedup and consolidation, the findings
-organize into **9 systemic themes** plus document-specific issues.
+**264 raw findings** identified across SSP v1.0 / Appendix A v0.8 and ~30 supporting
+documents. Updated against **v1.1 (2/23/2026)**: 10 findings resolved, 10 new issues
+introduced, core findings (timelines, Planned controls, IR Plan) remain unaddressed.
+See `ssp-v1.1-delta-report.md` for the change summary.
 
 **The three most critical themes:**
 
@@ -163,12 +164,13 @@ Pervasive across the entire SSP. Automated sweep confirmed:
 |-------|-------|-----------|
 | Inspector/SonarQube mentioned without Grype/Dependabot/Renovate | 53 lines | RA-5, SI-2, SR-2, CA-7, CM-5(6), SA-11, and more |
 | "Terraform" instead of "OpenTofu" | 15 instances | CM-2, CM-3(6), CM-4, SA-10, SR-12 |
-| "Kibana"/"Elasticsearch" instead of Graylog (SIEM) / Grafana Loki (app logs) | 7 instances | CA-7, SI-4, Table 8.1 |
+| ~~"Kibana"/"Elasticsearch"~~ → OpenSearch in v1.1 | ~~7~~ **RESOLVED** | Replaced with OpenSearch. Consider Graylog where SIEM is meant. |
 | "lstio" typo (should be "Istio") | 8 instances | SC-8, SC-10, SC-13, SI-3 |
-| "BigBang" instead of "UDS Core" | 2 instances | SSP §8, CMP §3.2.1 |
-| **"NeuVector" instead of "Falco"** | multiple | CA-7, MA-4(3), SI-16, software inventory, Table 8.1 |
-| "Cloudflare for Government" (not deployed) | 2 instances | SC-5, SC-7 |
-| "Velero" (not used; actual: cron DB backups to S3 + IaC rebuild) | multiple | CP controls, ISCP, DR/BC Plan |
+| ~~"BigBang" instead of "UDS Core"~~ | ~~2~~ **RESOLVED in v1.1** | Updated to UDS in SSP + CMP |
+| **"NeuVector" instead of "Falco"** | 11 in v1.1 | CA-7, MA-4(3), AC-3, SI, Table 8.1. Some refs removed in v1.1 but none replaced with Falco. |
+| "Cloudflare for Government" (not deployed) | 1 in v1.1 | SC-5 de-branded to "a CDN" in v1.1, **still in SC-7** |
+| ~~"Velero"~~ removed in v1.1 but **nothing replaced it** | **GAP** | CP-6/CP-7 now name no backup tool. Must document actual approach. |
+| **"Chainguard" should be "RapidFort"** (NEW) | multiple | Table 8.1, CMP, Appendix Q. Chainguard no longer used per UDS licensing changes. |
 | "AWS EDR" (not configured, not relevant for EKS) | 1 instance | CP-7 |
 | NeuVector missing from Table 8.1 | 1 | SSP Table 8.1 — should be **Falco** |
 | SonarQube described as SCA tool (it's SAST) | 2 | SR-11, CM-8(3) |
