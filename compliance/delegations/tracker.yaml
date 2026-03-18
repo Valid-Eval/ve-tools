@@ -19,7 +19,7 @@
     7 findings identified (F-1 through F-7). Key issues: vuln timeline
     inconsistencies across policy/procedure docs, Grype not in SSP,
     BOD 22-01/KEV not addressed. Share with Trent for resolution.
-  reference: "~/.claude/supply-chain-skill-development/investigation/ssp-review-findings.md"
+  reference: "compliance/ssp-review-findings.md"
 
 - id: D-002
   what: "ARC upgrade to 0.13.1"
@@ -31,7 +31,7 @@
     Briefing doc delivered. Needs CI downtime window. Key risk: CRD deletion
     required at 0.9.0 and 0.12.0, verify postRenderers dind image override
     compatibility.
-  reference: "/Users/jacob/Documents/GitHub/arc-upgrade-briefing.md"
+  reference: "https://github.com/Valid-Eval/ve-tools/blob/feature/compliance-os-foundation/compliance/DESIGN.md (ARC briefing doc delivered separately)"
 
 - id: D-003
   what: "InfusionPoints SOC onboarding"

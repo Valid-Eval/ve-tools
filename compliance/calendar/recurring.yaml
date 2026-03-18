@@ -196,6 +196,7 @@ annually:
 
 # Commitments discovered during comprehensive SSP review (2026-03-16):
 
+additional_weekly:
   - name: Audit Log Review
     description: >
       Review audit logs for inappropriate or unusual activity per AU-6.
@@ -215,6 +216,7 @@ annually:
     assessor_scrutiny: medium
     notes: "Currently CTO + CEO. Review queued Jira tickets and PRs."
 
+semi_annual:
   - name: Traffic Flow Policy Exception Review
     description: >
       Review exceptions to traffic flow policy (security group rules, network policies).
@@ -223,6 +225,7 @@ annually:
     owner: jacob
     assessor_scrutiny: medium
 
+additional_quarterly:
   - name: Privileged Access Quarterly Review (CM-5(5))
     description: >
       Review and reevaluate privileges for production change access.
