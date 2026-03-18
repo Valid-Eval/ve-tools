@@ -341,37 +341,51 @@ will request every referenced document.
 
 ### Must Fix Before Assessment (HIGH)
 
-1. **Remediation timelines**: Align all documents to FedRAMP Rev 5 (Critical=15d). Add KEV 14d.
-2. **POA&M**: Create entries for all ~35 Planned/Partially Implemented controls.
-3. **CP test**: Conduct first test, document results in Appendix G.
-4. **RTO/RPO**: Define single authoritative values. Reclassify site type.
-5. **IR Plan**: Fix document ID (VE-CM-SOP-3→VE-IR-SOP-1), populate contacts, add cadences.
-6. **IR Plan reporting**: Remove CIA-loss qualifier from 1-hour reporting scope.
-7. **Phishing-resistant MFA**: Document migration plan or current implementation.
-8. **Missing documents**: Create or fix references for 7 missing documents.
-9. **AT-4 training records**: Implement tracking before assessment.
+| # | Action | Owner | Notes |
+|---|--------|-------|-------|
+| 1 | Remediation timelines: align to Rev 5 (Critical=15d). Add KEV 14d. | **Rule4** | SSP text: RA-5(d), SI-2(3), VE-RA-SOP-2, VE-SC-POL-3 |
+| 2 | POA&M entries for Planned/Partial controls | **Rule4 + VE** | POA&M v1.0 exists; needs entries for ~35 controls. Many are stale checkboxes — triage first. |
+| 3 | CP test: document the NASA tabletop; schedule formal exercise | **VE + Rule4** | Retroactively document existing exercise in ISCP Appendix F. Plan formal test with Rule4. |
+| 4 | RTO/RPO: define values, reclassify to cold site | **Rule4** | SSP/ISCP text changes. Remove AWS EDR ref, document actual backup approach. |
+| 5 | IR Plan: fix doc ID, populate contacts, add cadences | **Rule4** | IR Plan was unchanged in v1.1. Still says VE-CM-SOP-3. |
+| 6 | IR Plan: remove CIA-loss qualifier from 1-hour reporting | **Rule4** | All confirmed incidents, not just "critical" |
+| 7 | Phishing-resistant MFA: document Keycloak migration plan | **VE + Rule4** | VE defines timeline; Rule4 documents as POA&M item |
+| 8 | Missing documents: create or fix references for 7 docs | **Rule4** | Some may exist under different names; verify first |
+| 9 | Training records: implement tracking in compliance OS | **VE** | New data tracking mechanism needed |
 
 ### Should Fix (MEDIUM)
 
-10. **Tool references**: Global updates for Terraform, Kibana, BigBang, lstio, scanner tools.
-11. **Aspirational narratives**: Reconcile "Planned" status with present-tense narratives.
-12. **CAB/CCB/SecOps/AO terminology**: Standardize across all documents.
-13. **Velero documentation**: Properly describe its backup role in DR/BC and ISCP.
-14. **GitHub risk acceptance**: Document the risk decision for using non-FedRAMP service.
-15. **Software inventory**: Remove archived entries, add active tools.
-16. **Risk register**: Conduct review, update statuses, add new risks.
-17. **Separation of duties**: Add role-to-person mapping with compensating controls.
-18. **Recovery procedures**: Embed in documents (not Confluence links).
-19. **DAST gap**: Either add actual DAST tool or reframe Nightwatch honestly.
-20. **Appendix Q "Other" section**: Populate with MFA, signing, hashing entries.
+| # | Action | Owner | Notes |
+|---|--------|-------|-------|
+| 10 | Tool refs: Terraform→OpenTofu, NeuVector→Falco, Chainguard→RapidFort, add Grype | **Rule4** | SSP text. 12 Terraform, 11 NeuVector, 8 lstio, 1 Cloudflare |
+| 11 | Reconcile Planned checkboxes with reality | **Rule4 + VE** | Triage showed ~8 are stale checkboxes (CA-2(1), CM-4, CM-7, CM-9, PL-1, SA-1, etc.) |
+| 12 | CAB/CCB/SecOps/AO terminology | **Rule4** | SSP text standardization |
+| 13 | Document actual backup approach (replace Velero gap) | **Rule4** | Nightly DB dumps to S3 + IaC rebuild |
+| 14 | GitHub risk acceptance | **Rule4** | v1.1 moved GitHub to FedRAMP-authorized table — may be resolved |
+| 15 | Software inventory update | **Rule4 + VE** | Remove Chainguard/archived entries, add Falco/Grype/Renovate/etc. |
+| 16 | Risk register review | **VE + Rule4** | Static since 12/7/2024. Compliance OS quarterly activity. |
+| 17 | Separation of duties: role-to-person mapping | **Rule4** | SSP text + supporting doc |
+| 18 | Recovery procedures: embed inline (not Confluence links) | **Rule4** | ISCP + DR/BC Plan |
+| 19 | DAST tool: evaluate and integrate | **Rule4 + VE** | Rule4 to recommend; VE to integrate into CI |
+| 20 | Appendix Q "Other" section: populate | **Rule4** | MFA, code signing, hashing entries |
+| 21 | ISCP "CSP Name" regression: fix template placeholders | **Rule4** | v1.1 introduced this regression |
+| 22 | ISCP version number: increment | **Rule4** | Content changed but still shows v0.1 |
 
 ### Nice to Fix (LOW)
 
-21. Typos: lstio, Grafrana, "principal"→"principle", Section 899→889, etc.
-22. Duplicate paragraphs in MP controls.
-23. Checkbox rendering issues (~15 controls).
-24. Copyright date inconsistencies in IR templates.
-25. "master branch"→"main branch" in CM-5(6).
+| # | Action | Owner |
+|---|--------|-------|
+| 23 | lstio→Istio (8 instances) | Rule4 |
+| 24 | "ECT"→"ECR" typo in v1.1 Appendix A | Rule4 |
+| 25 | SCRMP filename "Magement"→"Management" | Rule4 |
+| 26 | Istio port 15021 "??" incomplete entry | Rule4 |
+| 27 | "Bash" listed twice in CMP | Rule4 |
+| 28 | Checkbox rendering (~145 blank) | Rule4 |
+| 29 | "master branch"→"main branch" in CM-5(6) | Rule4 |
+| 30 | Section 899→889 NDAA reference | Rule4 |
+| 31 | NIST SP 800-31→800-30 reference | Rule4 |
+| 32 | Duplicate paragraphs in MP controls | Rule4 |
+| 33 | Copyright date inconsistencies in IR templates | Rule4 |
 
 ---
 
