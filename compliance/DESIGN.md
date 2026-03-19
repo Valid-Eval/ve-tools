@@ -247,7 +247,7 @@ Clock stops on remediation scan verification (not code commit or deploy).
 
 ## Open Questions
 
-Twenty open questions are documented in `open-questions.md` covering:
+Twenty open questions are documented in `questions-and-answers.md` covering:
 - **Current state** (#1-10): What's actually happening today with ConMon deliverables,
   access reviews, training, POA&Ms, etc.
 - **Design** (#11-15): Data location, approval workflows, Jira integration

@@ -25,7 +25,7 @@ for NASA.
 **InfusionPoints SOC** went live ~2026-03-09 (M-F 8-5 ET). Graylog SIEM operational.
 **NeuVector replaced by Falco** as of UDS v0.56 — SSP references are stale.
 **Keycloak PIV/CAC** is live with NASA Launchpad as IdP.
-**All 20 open questions answered** — see `open-questions.md` for full details.
+**All 20 open questions answered** — see `questions-and-answers.md` for full details.
 
 ---
 
