@@ -31,7 +31,7 @@
     Briefing doc delivered. Needs CI downtime window. Key risk: CRD deletion
     required at 0.9.0 and 0.12.0, verify postRenderers dind image override
     compatibility.
-  reference: "https://github.com/Valid-Eval/ve-tools/blob/feature/compliance-os-foundation/compliance/DESIGN.md (ARC briefing doc delivered separately)"
+  reference: "ARC briefing doc delivered separately to Devon"
 
 - id: D-003
   what: "InfusionPoints SOC onboarding"
