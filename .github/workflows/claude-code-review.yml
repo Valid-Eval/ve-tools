@@ -1,0 +1,142 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  claude-review:
+    if: github.event.pull_request.user.login != 'renovate[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          additional_permissions: |
+            actions: read
+
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            EVENT: ${{ github.event.action }}
+            BEFORE_SHA: ${{ github.event.before }}
+            AFTER_SHA: ${{ github.event.after }}
+            BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+
+            ## Review Scope
+
+            You are reviewing a pull request in a mixed-language operational tooling and compliance data repository.
+            This repo contains: Python CLI tools (vetools package, kubectl plugins), Go code (credbridge for ECR
+            credential bridging), GitHub Actions workflows, YAML compliance data, and markdown documentation.
+
+            - If EVENT is "opened": Review the full PR diff using `git diff origin/${BASE_BRANCH}...HEAD`
+            - If EVENT is "synchronize": Review ONLY the newly pushed changes using `git diff ${BEFORE_SHA}..${AFTER_SHA}`. Do NOT re-review code from earlier commits that hasn't changed.
+
+            ## Before You Start
+
+            1. Read existing review comments and their reply threads:
+               gh api repos/${{ github.repository }}/pulls/${PR_NUMBER}/comments --paginate --jq '.[] | {id, path, line, body: (.body | split("\n")[0]), in_reply_to_id}'
+               gh api repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews --paginate --jq '.[] | {user: .user.login, state, body: (.body // "" | split("\n")[0])}'
+            2. Check review thread states to see which comments have been resolved or replied to:
+               gh api graphql -f query='{ repository(owner: "${{ github.repository_owner }}", name: "${{ github.event.repository.name }}") { pullRequest(number: ${PR_NUMBER}) { reviewThreads(first: 100) { nodes { isResolved, comments(first: 10) { nodes { body, author { login } } } } } } } }'
+            3. For resolved threads or threads with developer replies:
+               - If the developer fixed the issue: do not re-flag it
+               - If the developer replied explaining why they chose not to address it: respect that decision
+               - If the code was changed but the fix looks incomplete: you may comment noting the remaining concern
+            4. Do NOT repeat any finding that has already been reported — even if it's still unfixed and unresolved
+
+            ## What to Look For
+
+            Focus on actionable bugs and correctness issues in the changed code:
+
+            Python (vetools package, kubectl plugins):
+            - Click CLI argument/option misconfigurations
+            - Kubernetes client API misuse (wrong resource types, missing error handling)
+            - PyRSMQ message format errors
+            - Import errors or missing dependencies in setup.py/requirements.txt
+
+            Go (credbridge):
+            - AWS SDK credential chain errors (wrong provider order, missing region config)
+            - ECR token handling bugs (expiration, encoding, registry URL parsing)
+            - Error handling gaps in credential bridging flow
+            - Go module dependency issues (go.mod/go.sum inconsistencies)
+
+            Compliance YAML (compliance/):
+            - Schema inconsistencies (mismatched field names across files)
+            - Invalid cross-references (finding IDs, commitment IDs that don't exist)
+            - Calendar date errors (impossible dates, wrong recurrence patterns)
+            - YAML syntax errors or structural problems
+
+            GitHub Actions workflows (.github/):
+            - Incorrect action versions or missing pinning
+            - Secret reference errors (referencing secrets that don't exist)
+            - Missing or overly broad permissions
+            - credential-rotations.yml: invalid date formats, missing required fields
+
+            Markdown documentation:
+            - Cross-reference integrity (links to files that don't exist)
+            - Factual accuracy of compliance claims against known data
+
+            General:
+            - Logic errors, wrong conditions, missing edge cases
+            - Breaking changes to credbridge (built into every VE container image)
+            - Data flow bugs
+
+            ## What NOT to Flag
+
+            - Pre-existing code that was not changed in this push
+            - Style, formatting, naming, or documentation suggestions
+            - Theoretical performance concerns
+            - Compliance YAML content accuracy (humans own compliance decisions — only flag structural/schema issues)
+            - The replace directive in go.mod (credbridge is intentionally a local sub-module)
+            - Hardcoded AWS GovCloud regions or account references in compliance docs (intentional)
+            - Org-level secret references (JIRA_API_TOKEN, SG_API_KEY, CLAUDE_CODE_OAUTH_TOKEN)
+
+            ## Output Format
+
+            Post line-specific findings as inline review comments on the relevant lines of the diff.
+            For concerns that are genuinely about the overall PR, use the review body summary instead.
+
+            Submit a pull request review using the GitHub API:
+
+            gh api repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews --input /tmp/review.json
+
+            Where /tmp/review.json contains a JSON object with event "COMMENT", a body for the summary,
+            and a comments array with objects containing path, line, and body fields.
+
+            Each inline comment should include:
+            - Severity prefix: [Critical] (blocks merge), [Warning] (should fix), or [Note] (consider)
+            - What's wrong with evidence (trace the data flow, show the actual values)
+            - Suggested fix (concrete, not vague)
+
+            The line field must reference a line number visible in the diff. Use gh pr diff ${PR_NUMBER} to verify line numbers.
+
+            If no new issues are found, submit a review with an empty comments array and a body stating no issues found.
+
+            ## Scope Override
+
+            The review scope and "What NOT to Flag" guidelines above are defaults for automated per-push reviews.
+            If a developer explicitly requests a comprehensive or expanded review, follow their instructions and expand
+            your scope accordingly. Developer requests always take precedence over these defaults.
+
+            For project context, read these files as needed:
+            - CLAUDE.md — Repository structure, commands, environment context, cross-repo references
+            - compliance/DESIGN.md — Compliance OS architecture and data model
+
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(git diff:*),Bash(git log:*),Bash(gh api:*)"'

@@ -1,0 +1,12 @@
+# Gemini Code Assist configuration for ve-tools.
+# Pattern: matches ve-app and ve-zarf repos.
+# Gemini posts line-level review comments on PRs automatically.
+pull_request_opened:
+  summary: true
+  code_review: true
+  include_drafts: false
+
+ignore_patterns:
+  - "scratch/**"
+  - "*.pyc"
+  - "__pycache__/**"
