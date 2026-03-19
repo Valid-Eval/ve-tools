@@ -37,22 +37,44 @@
     platform.
 
 - id: ARCH-002
-  date: 2026-03-16
-  decision: "PENDING — Skill architecture: how /compliance relates to existing supply-chain-assessment skill"
+  date: 2026-03-19
+  decision: "Separate skills with shared decision record (Option B)"
   description: >
-    Open design question. The existing supply-chain-assessment skill (PR #6, merged
-    2026-02-19 in valid-eval-skills) handles app-layer dependency analysis with
-    interactive disposition review. The new /compliance skill covers the broader
-    compliance operating system. Need to resolve:
-    (a) Should supply-chain-assessment be absorbed into /compliance?
-    (b) Are there distinct skills at different abstraction layers (e.g., a detail-level
-        scanner skill vs. an executive-level compliance skill)?
-    (c) How do skills compose — does /compliance invoke supply-chain-assessment
-        internally, or do they share data but run independently?
-    (d) What's the right skill boundary for maintainability and usability?
-  rationale: null
-  alternatives_considered: null
-  decided_by: null
+    The existing supply-chain-assessment skill and the new /compliance skill remain
+    separate, independent skills invoked for different purposes. They share a common
+    decision record (ve-tools/compliance/decisions/) so that vulnerability dispositions,
+    risk acceptances, and other human decisions flow into a single source of truth
+    regardless of which skill produced them.
+
+    supply-chain-assessment: Deep, branch-level dependency analysis for ve-app.
+    5-phase workflow with NIST-aligned scoring, agent playbooks, interactive disposition
+    review. Invoked when reviewing a specific branch or preparing audit evidence.
+
+    /compliance: Broad operational compliance management across all domains.
+    Queries live data sources on demand, produces time-horizon-organized status views,
+    generates compliance artifacts. Invoked for weekly triage, monthly ConMon prep, etc.
+
+    Future skills (e.g., image-* repo management, infrastructure scanning) would follow
+    the same pattern: independent invocation, shared decision record. The decision record
+    in ve-tools/compliance/decisions/ is the integration point, not skill composition.
+  rationale: >
+    (1) Different invocation patterns — branch review vs operational dashboard.
+    (2) Different depths — deep NIST scoring vs broad multi-source synthesis.
+    (3) Shared decisions solve the real problem (single source of truth).
+    (4) Minimal change — existing skill works, new skill built fresh.
+    (5) Matches design philosophy: simple, focused tools.
+  alternatives_considered:
+    - "Option A (fully independent): Clean separation but dispositions tracked in two
+      places. Rejected because the duplication creates audit risk."
+    - "Option C (absorb into /compliance): One monolithic skill. Rejected because the
+      supply-chain skill is complex (5 reference files, agent playbooks) and the use
+      cases are genuinely different. Forcing them together dilutes both."
+  decided_by: jacob
+  next_steps:
+    - "Update supply-chain-assessment to write dispositions to ve-tools/compliance/decisions/dispositions.yaml"
+    - "Ensure supply-chain-assessment is aware of the compliance OS design context"
+    - "Build /compliance skill v1 reading from the shared decision record"
+    - "Future: evaluate whether image-* repo management warrants its own skill or extends supply-chain-assessment"
   review_trigger: >
-    Resolve before building /compliance skill. Does not block the ve-tools data
-    foundation or documentation work.
+    Revisit if the number of skills grows beyond 3, or if skill boundaries prove
+    awkward in practice. The shared decision record is the stable integration point.
