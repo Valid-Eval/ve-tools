@@ -2,13 +2,33 @@
 
 Operational tooling and compliance data for Valid Eval.
 
+## Commands
+
+```bash
+# Python package (kubectl plugins)
+pip install -e .                     # Install vetools + kubectl plugins
+kubectl ve-console                   # Interactive k8s console
+kubectl ve-queues                    # List Redis queues
+kubectl ve-queue <name>              # Inspect a specific queue
+
+# Go binary (ECR credential bridging)
+cd credbridge && go build -o ../build/credbridge .
+
+# Credential rotation workflow
+# Runs daily at 9 AM UTC via GitHub Actions
+# Configure credentials in .github/credential-rotations.yml
+# After rotating: update expires date, close GH issue + Jira ticket
+```
+
 ## Repository Structure
 
 ### Operational Tooling
-- `vetools/` — Python package for Kubernetes and Redis operations (kubectl plugins)
-- `credbridge/` — Go binary for AWS ECR credential bridging in containers
+- `vetools/` — Python package (click CLI, kubernetes client, PyRSMQ). Requires Python 3.x.
+- `credbridge/` — Go 1.22+ binary for AWS ECR credential bridging in containers
 - `bin/` — kubectl plugins (`kubectl-ve-console`, `kubectl-ve-queue`, `kubectl-ve-queues`, `dockercredrot`)
-- `.github/workflows/` — Credential rotation reminder workflow
+- `.github/workflows/credential-rotation-reminder.yml` — Daily credential expiry checks → GH issues + Jira + email
+- `.github/credential-rotations.yml` — Credential inventory with expiry dates and rotation steps
+- `scratch/` — Gitignored working directory for local experiments
 
 ### Compliance Operating System (`compliance/`)
 Data foundation for VE's compliance management across FedRAMP Moderate, IL-4/5, and CMMC L2.
@@ -55,3 +75,10 @@ When modifying files in `compliance/`:
 - `calendar/recurring.yaml` defines what the `/compliance` skill checks — keep it accurate
 - `decisions/` files are append-mostly — git history is the audit trail
 - `delegations/tracker.yaml` tracks cross-party commitments — update status, don't delete entries
+
+## Gotchas
+
+- **credbridge is built into every VE container image** — it provides ECR auth at runtime. Changes here affect all image-* repos.
+- **Credential rotation workflow** uses org-level secrets (JIRA_API_TOKEN, SG_API_KEY) — test with `dry_run: true` workflow dispatch.
+- **The compliance/ directory is on a feature branch** (`feature/compliance-os-foundation`, PR #3) — not yet on main.
+- **Go module uses `replace` directive** — `credbridge/` is a local sub-module, not a separate repo.
