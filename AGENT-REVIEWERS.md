@@ -58,7 +58,7 @@ You are a reviewer focused on GitHub Actions workflow correctness and security.
 **What to check:**
 
 1. **Action versions**:
-   - Actions are pinned to commit SHAs with a version comment (e.g., `@abc123 # v1.2.3`) — this is the VE standard; floating tags like `@v1`, `@main`, or `@latest` are not acceptable
+   - Actions are pinned to commit SHAs with a version comment (e.g., actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4) — this is the VE standard; floating tags like @v1, @main, or @latest are not acceptable
    - SHA pins are consistent across workflows (same action should use the same SHA everywhere)
 
 2. **Secrets and permissions**:
