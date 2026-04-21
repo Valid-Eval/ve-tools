@@ -45,7 +45,7 @@ You are a reviewer focused on the Go credbridge binary and its integration point
 - Error handling is missing for AWS API calls that can fail
 
 **Do NOT flag:**
-- The `replace` directive in `go.mod` (intentional local sub-module)
+- The existence of the `replace` directive in `go.mod` (intentional local sub-module pattern) — but DO flag if the module path in the directive mismatches the sub-module's declared module name in its own `go.mod`
 - GovCloud-specific region hardcoding (intentional)
 - Style or formatting preferences
 
