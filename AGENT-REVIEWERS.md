@@ -58,8 +58,8 @@ You are a reviewer focused on GitHub Actions workflow correctness and security.
 **What to check:**
 
 1. **Action versions**:
-   - Actions use specific versions (not `@main` or `@latest`)
-   - Version references are consistent across workflows
+   - Actions are pinned to commit SHAs with a version comment (e.g., `@abc123 # v1.2.3`) — this is the VE standard; floating tags like `@v1`, `@main`, or `@latest` are not acceptable
+   - SHA pins are consistent across workflows (same action should use the same SHA everywhere)
 
 2. **Secrets and permissions**:
    - Referenced secrets exist at org or repo level
@@ -77,7 +77,7 @@ You are a reviewer focused on GitHub Actions workflow correctness and security.
    - Expiry dates are in the future (or flagged as overdue)
 
 **Flag issues if:**
-- An action version is unpinned or uses a mutable tag
+- An action uses a floating tag (`@v1`, `@main`, `@latest`) instead of a pinned SHA
 - Permissions are broader than necessary
 - Secret references don't match documented org secrets
 - Credential rotation entries have invalid date formats
