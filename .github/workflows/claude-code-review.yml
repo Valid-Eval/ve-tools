@@ -52,10 +52,10 @@ jobs:
             ## Before You Start
 
             1. Read existing review comments and their reply threads:
-               gh api repos/${{ github.repository }}/pulls/${PR_NUMBER}/comments --paginate --jq '.[] | {id, path, line, body: (.body | split("\n")[0]), in_reply_to_id}'
-               gh api repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews --paginate --jq '.[] | {user: .user.login, state, body: (.body // "" | split("\n")[0])}'
+               gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate --jq '.[] | {id, path, line, body: (.body | split("\n")[0]), in_reply_to_id}'
+               gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews --paginate --jq '.[] | {user: .user.login, state, body: (.body // "" | split("\n")[0])}'
             2. Check review thread states to see which comments have been resolved or replied to:
-               gh api graphql -f query='{ repository(owner: "${{ github.repository_owner }}", name: "${{ github.event.repository.name }}") { pullRequest(number: ${PR_NUMBER}) { reviewThreads(first: 100) { nodes { isResolved, comments(first: 10) { nodes { body, author { login } } } } } } } }'
+               gh api graphql -f query='{ repository(owner: "${{ github.repository_owner }}", name: "${{ github.event.repository.name }}") { pullRequest(number: ${{ github.event.pull_request.number }}) { reviewThreads(first: 100) { nodes { isResolved, comments(first: 10) { nodes { body, author { login } } } } } } } }'
             3. For resolved threads or threads with developer replies:
                - If the developer fixed the issue: do not re-flag it
                - If the developer replied explaining why they chose not to address it: respect that decision
@@ -116,7 +116,7 @@ jobs:
 
             Submit a pull request review using the GitHub API:
 
-            gh api repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews --input /tmp/review.json
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews --input /tmp/review.json
 
             Where /tmp/review.json contains a JSON object with event "COMMENT", a body for the summary,
             and a comments array with objects containing path, line, and body fields.
@@ -126,7 +126,7 @@ jobs:
             - What's wrong with evidence (trace the data flow, show the actual values)
             - Suggested fix (concrete, not vague)
 
-            The line field must reference a line number visible in the diff. Use gh pr diff ${PR_NUMBER} to verify line numbers.
+            The line field must reference a line number visible in the diff. Use gh pr diff ${{ github.event.pull_request.number }} to verify line numbers.
 
             If no new issues are found, submit a review with an empty comments array and a body stating no issues found.
 

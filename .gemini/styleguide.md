@@ -2,15 +2,7 @@
 
 ## Project Context
 
-ve-tools is a mixed-language repository containing operational tooling and compliance data
-for the Valid Eval platform. It includes Python CLI tools, a Go binary, GitHub Actions
-workflows, YAML compliance data, and markdown documentation.
-
-For full project context, read these files in order of priority:
-
-1. **`CLAUDE.md`** — Repository structure, commands, environment context, cross-repo references
-2. **`compliance/DESIGN.md`** — Compliance OS architecture, data model, and vision
-3. **`compliance/ssp-review-findings.md`** — Authoritative SSP findings list
+For full project context, read `CLAUDE.md` — repository structure, commands, environment context, and cross-repo references.
 
 ## Tech Stack — Avoid Common False Positives
 
@@ -22,7 +14,7 @@ For full project context, read these files in order of priority:
   (Inspector2, Grype, Dependabot). Only structural/schema issues are reviewable — content
   accuracy is a human responsibility.
 - **GitHub Actions**: Credential rotation workflow uses org-level secrets (`JIRA_API_TOKEN`,
-  `SG_API_KEY`). These are intentional and documented.
+  `SG_API_KEY`).
 
 ## What to Focus On
 
