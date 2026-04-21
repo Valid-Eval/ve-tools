@@ -31,8 +31,7 @@ cd credbridge && go build -o ../build/credbridge .
 - `scratch/` — Gitignored working directory for local experiments
 
 ### Compliance Operating System
-Compliance data has moved to the dedicated [ve-compliance](https://github.com/Valid-Eval/ve-compliance) repo.
-The `compliance/` directory in this repo is a stale artifact from feature branch work (PR #3, closed without merging) and should be ignored.
+Compliance data lives in the dedicated [ve-compliance](https://github.com/Valid-Eval/ve-compliance) repo.
 
 ## Environment Context
 
@@ -51,7 +50,7 @@ The `compliance/` directory in this repo is a stale artifact from feature branch
 - **ve-app**: Main application repository
 - **ve-zarf**: Air-gap packaging, Zarf bundles, container image fleet doc
 - **ve-iac**: OpenTofu IaC for IL2 stg/prod
-- **ve-deployments**: Flux/Helm configs for CI cluster (branch: `ve-com-testing-v2`)
+- **ve-deployments**: Flux/Helm configs for CI cluster
 - **infosec-iac**: FedRAMP compliance automation, Graylog, security tooling
 - **valid-eval-skills**: Claude Code skills including supply-chain-assessment
 - **image-***: 12 container image build repos
