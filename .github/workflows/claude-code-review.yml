@@ -46,8 +46,8 @@ jobs:
             This repo contains: Python CLI tools (vetools package, kubectl plugins), Go code (credbridge for ECR
             credential bridging), GitHub Actions workflows, YAML compliance data, and markdown documentation.
 
-            - If EVENT is "opened": Review the full PR diff using `git diff origin/${BASE_BRANCH}...HEAD`
-            - If EVENT is "synchronize": Review ONLY the newly pushed changes using `git diff ${BEFORE_SHA}..${AFTER_SHA}`. Do NOT re-review code from earlier commits that hasn't changed.
+            - If EVENT is "opened": Review the full PR diff using `git diff origin/${{ github.event.pull_request.base.ref }}...HEAD`
+            - If EVENT is "synchronize": Review ONLY the newly pushed changes using `git diff ${{ github.event.before }}..${{ github.event.after }}`. Do NOT re-review code from earlier commits that hasn't changed.
 
             ## Before You Start
 
@@ -136,8 +136,6 @@ jobs:
             If a developer explicitly requests a comprehensive or expanded review, follow their instructions and expand
             your scope accordingly. Developer requests always take precedence over these defaults.
 
-            For project context, read these files as needed:
-            - CLAUDE.md — Repository structure, commands, environment context, cross-repo references
-            - compliance/DESIGN.md — Compliance OS architecture and data model
+            For project context, read `CLAUDE.md` — repository structure, commands, environment context, and cross-repo references.
 
           claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(git diff:*),Bash(git log:*),Bash(gh api:*)"'

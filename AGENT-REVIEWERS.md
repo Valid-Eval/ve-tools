@@ -4,7 +4,6 @@ This is a mixed-language operational tooling and compliance data repository. Whe
 
 - Python code (`vetools/`, `bin/`) uses Click for CLI and kubernetes-client for K8s interaction
 - Go code (`credbridge/`) provides ECR credential bridging built into every VE container image
-- Compliance YAML (`compliance/`) stores human decisions — scanner data stays in source systems
 - GitHub Actions workflows handle credential rotation reminders and code review automation
 - The `replace` directive in `go.mod` is intentional — `credbridge/` is a local sub-module
 - Hardcoded AWS GovCloud regions and account IDs in compliance docs are intentional
@@ -12,9 +11,6 @@ This is a mixed-language operational tooling and compliance data repository. Whe
 # Context
 
 - **CLAUDE.md** — Repository structure, commands, environment context, cross-repo references
-- **compliance/DESIGN.md** — Compliance OS architecture, data model, and vision
-- **compliance/ssp-review-findings.md** — Authoritative SSP findings list (264 findings, 9 themes)
-- **compliance/calendar/recurring.yaml** — All recurring compliance obligations
 
 # Agents
 
