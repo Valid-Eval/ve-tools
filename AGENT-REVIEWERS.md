@@ -79,10 +79,9 @@ You are a reviewer focused on GitHub Actions workflow correctness and security.
 **Flag issues if:**
 - An action uses a floating tag (`@v1`, `@main`, `@latest`) instead of a pinned SHA
 - Permissions are broader than necessary
-- Secret references don't match documented org secrets
+- A referenced secret is not one of the standard VE org secrets listed below
 - Credential rotation entries have invalid date formats
 
 **Do NOT flag:**
-- The use of `CLAUDE_CODE_OAUTH_TOKEN` secret (standard across all VE repos)
-- Org-level secrets like `JIRA_API_TOKEN` and `SG_API_KEY` (documented in CLAUDE.md)
+- Standard VE org secrets: `CLAUDE_CODE_OAUTH_TOKEN`, `JIRA_API_TOKEN`, `SG_API_KEY`
 - Style preferences in YAML formatting
