@@ -78,12 +78,6 @@ jobs:
             - Error handling gaps in credential bridging flow
             - Go module dependency issues (go.mod/go.sum inconsistencies)
 
-            Compliance YAML (compliance/):
-            - Schema inconsistencies (mismatched field names across files)
-            - Invalid cross-references (finding IDs, commitment IDs that don't exist)
-            - Calendar date errors (impossible dates, wrong recurrence patterns)
-            - YAML syntax errors or structural problems
-
             GitHub Actions workflows (.github/):
             - Incorrect action versions or missing pinning
             - Secret reference errors (referencing secrets that don't exist)
