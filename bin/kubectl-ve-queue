@@ -63,13 +63,13 @@ def get_queue_item(redis_host, redis_port, queue, item):
     return data
 
 
-def exec_queue_item_read(core_v1, context, queue, item, output, verbose):
-    pod = get_a_pod(core_v1, context, "valid-eval-redis")
+def exec_queue_item_read(core_v1, context, queue, item, output, verbose, pod_name):
+    pod = get_a_pod(core_v1, context, pod_name)
     if not pod:
         sys.stderr.write(f"No pod from {queue} in {context['namespace']}\n")
         sys.exit(1)
     if not pod:
-        sys.stderr.write(f"No pod from valid-eval-redis in {context['namespace']}\n")
+        sys.stderr.write(f"No pod from {pod_name} in {context['namespace']}\n")
         sys.exit(1)
 
     port = find_free_port()
@@ -96,13 +96,13 @@ def exec_queue_item_read(core_v1, context, queue, item, output, verbose):
     finally:
         p.join()
 
-def exec_queue_read(core_v1, context, queue, output, verbose):
-    pod = get_a_pod(core_v1, context, "valid-eval-redis")
+def exec_queue_read(core_v1, context, queue, output, verbose, pod_name):
+    pod = get_a_pod(core_v1, context, pod_name)
     if not pod:
         sys.stderr.write(f"No pod from {queue} in {context['namespace']}\n")
         sys.exit(1)
     if not pod:
-        sys.stderr.write(f"No pod from valid-eval-redis in {context['namespace']}\n")
+        sys.stderr.write(f"No pod from {pod_name} in {context['namespace']}\n")
         sys.exit(1)
 
     port = find_free_port()
@@ -135,7 +135,8 @@ def exec_queue_read(core_v1, context, queue, output, verbose):
 @click.option('--namespace','-n', help='Namespace')
 @click.option('--output','-o', default="text", help='Output (one of text, json, yaml)')
 @click.option('--verbose','-v', is_flag=True, default=False, help='Verbose')
-def main(queue, item, namespace, output, verbose):
+@click.option('--pod-name', envvar='VE_QUEUE_POD_NAME', default='valid-eval-valkey', help='Pod name prefix to look up (env: VE_QUEUE_POD_NAME)')
+def main(queue, item, namespace, output, verbose, pod_name):
     config.load_kube_config()
     try:
         c = Configuration().get_default_copy()
@@ -148,9 +149,9 @@ def main(queue, item, namespace, output, verbose):
     if namespace:
         context["namespace"] = namespace
     if item:
-        exec_queue_item_read(core_v1, context, queue, item, output, verbose)
-    else: 
-        exec_queue_read(core_v1, context, queue, output, verbose)
+        exec_queue_item_read(core_v1, context, queue, item, output, verbose, pod_name)
+    else:
+        exec_queue_read(core_v1, context, queue, output, verbose, pod_name)
 
 if __name__ == '__main__':
     main()

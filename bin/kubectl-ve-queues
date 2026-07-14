@@ -29,10 +29,10 @@ def get_metrics(redis_host, redis_port):
     return metrics
 
 
-def exec_queue(v1, context, output, verbose):
-    pod = get_a_pod(v1, context, "valid-eval-redis")
+def exec_queue(v1, context, output, verbose, pod_name):
+    pod = get_a_pod(v1, context, pod_name)
     if not pod:
-        sys.stderr.write(f"No pod from valid-eval-redis in {context['namespace']}\n")
+        sys.stderr.write(f"No pod from {pod_name} in {context['namespace']}\n")
         sys.exit(1)
 
     port = find_free_port()
@@ -165,7 +165,8 @@ def print_table(metrics):
 @click.option('--namespace','-n', help='Namespace')
 @click.option('--output','-o', default="text", help='Output (one of text, json, yaml)')
 @click.option('--verbose','-v', is_flag=True, default=False, help='Verbose')
-def main(namespace, output, verbose):
+@click.option('--pod-name', envvar='VE_QUEUE_POD_NAME', default='valid-eval-valkey', help='Pod name prefix to look up (env: VE_QUEUE_POD_NAME)')
+def main(namespace, output, verbose, pod_name):
     config.load_kube_config()
     try:
         c = Configuration().get_default_copy()
@@ -177,7 +178,7 @@ def main(namespace, output, verbose):
     context = config.list_kube_config_contexts()[1]['context']
     if namespace:
         context["namespace"] = namespace
-    exec_queue(core_v1, context, output, verbose)
+    exec_queue(core_v1, context, output, verbose, pod_name)
 
 if __name__ == '__main__':
     main()
