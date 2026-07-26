@@ -1,4 +1,4 @@
-click==8.1.7
+click==8.4.2
 sh==2.2.4
 PyRSMQ==0.6.1
 kubernetes==31.0.0
