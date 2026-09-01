@@ -1,0 +1,308 @@
+#!/bin/bash
+#
+# renovate-health-sweep — report what Renovate cannot reach, across the org.
+#
+# WHY THIS EXISTS
+# ---------------
+# Renovate publishes a "Dependency Dashboard" issue in each repo listing every
+# dependency it failed to look up, and a "Repository Problems" block naming the
+# reason (e.g. "ECR getAuthorizationToken error", "No docker auth found").
+#
+# In 2026 it emerged that Renovate had never once resolved the private-registry
+# base images across the image-* fleet — for as long as ~19 months in one repo —
+# while those repos' own Dockerfile comments asserted "Renovate tracks the
+# digest". The dashboards had been reporting the failure, correctly and
+# automatically, the entire time. Nobody read them.
+#
+# A dependency updater that has never fired on a whole registry is
+# indistinguishable from one that is working, until somebody counts. This is
+# the thing that counts.
+#
+# USAGE
+#   bin/renovate-health-sweep [--org ORG] [--all] [--repo NAME]... [--quiet]
+#
+#   (default)      sweep repos that contain a Renovate config file
+#   --all          sweep every non-archived repo in the org
+#   --repo NAME    sweep only the named repo (repeatable; skips discovery)
+#   --quiet        suppress the per-repo detail, print the summary only
+#
+# EXIT CODES  (deliberately distinct — see "attempted vs achieved" below)
+#   0  swept everything it attempted, and found no lookup failures
+#   1  swept everything it attempted, and found lookup failures
+#   2  could not read one or more repos it attempted  <- coverage is incomplete,
+#      so a "no failures" result from this run does NOT mean there are none
+#
+# REQUIREMENTS: bash 3.2+, gh (authenticated), jq.
+#
+# ---------------------------------------------------------------------------
+# IMPLEMENTATION NOTES — read before editing; each of these is a bug that has
+# actually been hit on this codebase, not a style preference.
+#
+# 1. TARGETS BASH 3.2.57. macOS ships that version and always will (bash 4+ is
+#    GPLv3). So: no `declare -A`, no `mapfile`, no `${x^^}`. `bash -n` does NOT
+#    catch these — they fail at runtime, and `declare -A` without `set -e`
+#    silently corrupts (every key collapses to index 0) rather than erroring.
+#    Parallel state is kept in newline-delimited strings for that reason.
+#
+# 2. NO `set -e`, NO `set -o pipefail`. This is deliberate. Almost every grep
+#    here *should* find nothing in the healthy case, and grep returns 1 when it
+#    finds nothing. Under `set -e` (with or without pipefail) that kills the
+#    script on the success path — a failure mode that survives every
+#    failing-path test, because it only triggers when things are fine.
+#    Errors are handled explicitly instead. Do not "tidy this up".
+#
+# 3. NEVER filter with `gh issue list --author`. gh REPORTS the author as
+#    "app/renovate" in its JSON output, but the --author filter only accepts the
+#    real login "renovate[bot]" — pass back the value gh just printed and it
+#    returns an empty list with exit 0. No error, no warning. Measured across 5
+#    repos: --author "app/renovate" -> 0 every time; client-side jq -> 1 every
+#    time. Author matching is therefore done client-side, in jq.
+#
+# 4. NEVER filter Renovate issues by title. Titles vary — "Dependency
+#    Dashboard", "Renovate Dashboard 🤖" (dependencyDashboardTitle override),
+#    and "Action Required: Fix Renovate Configuration". A title filter gave a
+#    ~9% false-negative rate on this org and hid a repo where Renovate had been
+#    fully halted for four months.
+#
+# 5. READ BOTH SIGNALS. The "Repository Problems" block sits ABOVE the detected
+#    dependency list; the "failed to look up" warning sits well below it. A grep
+#    window anchored on one will not see the other.
+# ---------------------------------------------------------------------------
+
+set -u
+
+ORG="Valid-Eval"
+SWEEP_ALL=0
+QUIET=0
+EXPLICIT_REPOS=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --org)   ORG="${2:-}"; shift 2 ;;
+    --all)   SWEEP_ALL=1; shift ;;
+    --quiet) QUIET=1; shift ;;
+    --repo)  EXPLICIT_REPOS="${EXPLICIT_REPOS}${2:-}
+"; shift 2 ;;
+    -h|--help)
+      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) printf 'unknown argument: %s (try --help)\n' "$1" >&2; exit 64 ;;
+  esac
+done
+
+for tool in gh jq; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    printf 'FATAL: %s not found on PATH\n' "$tool" >&2
+    exit 64
+  fi
+done
+
+# Renovate config paths checked when deciding whether a repo is in scope.
+CONFIG_PATHS="renovate.json
+renovate.json5
+.github/renovate.json
+.github/renovate.json5
+.renovaterc
+.renovaterc.json"
+
+# ---------------------------------------------------------------------------
+# Discover the repos to sweep.
+# ---------------------------------------------------------------------------
+discover_repos() {
+  if [ -n "$EXPLICIT_REPOS" ]; then
+    printf '%s' "$EXPLICIT_REPOS" | sed '/^$/d'
+    return 0
+  fi
+
+  local all_repos
+  all_repos=$(gh repo list "$ORG" --limit 500 --json name,isArchived \
+              --jq '.[] | select(.isArchived==false) | .name' 2>/dev/null)
+  if [ -z "$all_repos" ]; then
+    printf 'FATAL: could not list repos for org %s (gh auth? org name?)\n' "$ORG" >&2
+    exit 2
+  fi
+
+  if [ "$SWEEP_ALL" -eq 1 ]; then
+    printf '%s\n' "$all_repos"
+    return 0
+  fi
+
+  # Default scope: repos carrying a Renovate config file. Chosen so that
+  # "has a config but publishes no dashboard" is a DIAGNOSTIC third state
+  # rather than background noise from repos that legitimately have no
+  # dependencies at all.
+  printf '%s\n' "$all_repos" | while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    printf '%s\n' "$CONFIG_PATHS" | while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      if gh api "repos/${ORG}/${repo}/contents/${path}" --jq '.path' >/dev/null 2>&1; then
+        printf '%s\n' "$repo"
+        break
+      fi
+    done
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Per-repo classification.
+#
+# Emits one record to stdout:  <STATE>\t<repo>\t<issue#>\t<detail>
+# STATE is one of:
+#   HALTED       Renovate has stopped itself on a config error and is opening
+#                NO PRs AT ALL. Most severe state: the repo looks quiet, and a
+#                classifier that only parses dashboards reads it as healthy.
+#                (Found exactly this way — a repo halted 4 months, 0 PRs ever,
+#                was initially reported CLEAN by this script's first draft.)
+#   FAILURES     dashboard found, and it reports lookup failures
+#   PROBLEMS     no lookup failures, but the Repository Problems block is
+#                non-empty (e.g. a halted config) — still needs a human
+#   CLEAN        dashboard found, nothing wrong
+#   NO_DASHBOARD no Renovate-authored issue at all. NOT the same as clean:
+#                Renovate reports nothing about a file it never opened, so this
+#                state is where an entirely-unseen dependency would hide.
+#   UNREADABLE   the API call failed — coverage gap, never counted as clean
+# ---------------------------------------------------------------------------
+classify_repo() {
+  local repo="$1"
+  local issues issue_num body problems failures
+
+  issues=$(gh issue list --repo "${ORG}/${repo}" --state open --limit 50 \
+             --json number,title,author 2>/dev/null)
+  if [ -z "$issues" ]; then
+    # Distinguish "no open issues" (valid, empty array) from an API failure.
+    if ! gh api "repos/${ORG}/${repo}" --jq '.name' >/dev/null 2>&1; then
+      printf 'UNREADABLE\t%s\t-\tcould not reach repo via gh api\n' "$repo"
+      return 0
+    fi
+    printf 'NO_DASHBOARD\t%s\t-\tno open issues at all\n' "$repo"
+    return 0
+  fi
+
+  # NOTE 3 + NOTE 4: author matched client-side, title never matched.
+  issue_num=$(printf '%s' "$issues" \
+              | jq -r '.[] | select(.author.login | test("renovate";"i")) | .number' 2>/dev/null \
+              | head -1)
+
+  if [ -z "$issue_num" ]; then
+    printf 'NO_DASHBOARD\t%s\t-\tno Renovate-authored open issue\n' "$repo"
+    return 0
+  fi
+
+  body=$(gh issue view "$issue_num" --repo "${ORG}/${repo}" --json body --jq '.body' 2>/dev/null)
+  if [ -z "$body" ]; then
+    printf 'UNREADABLE\t%s\t#%s\tissue body empty or unreadable\n' "$repo" "$issue_num"
+    return 0
+  fi
+
+  # A config-error issue is NOT a dashboard and contains none of a dashboard's
+  # markers. It must be detected on its own terms or it reads as healthy, which
+  # is the worst possible misclassification: Renovate is opening no PRs at all.
+  if printf '%s' "$body" | grep -qE 'Renovate will stop PRs until it is resolved|error with this repository.s Renovate configuration'; then
+    local reason
+    reason=$(printf '%s' "$body" | grep -oE 'Message: .*' | head -1 | sed 's/^Message: //')
+    [ -n "$reason" ] || reason="config error (see issue)"
+    printf 'HALTED\t%s\t#%s\t%s\n' "$repo" "$issue_num" "$reason"
+    return 0
+  fi
+
+  # NOTE 5: two separate signals, in different parts of the body.
+  # NOTE 2: these greps return 1 when they find nothing, which is the healthy
+  # case — hence no `set -e`.
+  problems=$(printf '%s' "$body" | grep -E '^[[:space:]]*-[[:space:]]*.*WARN' \
+             | sed 's/^[[:space:]]*-[[:space:]]*//' | tr '\n' ';' | sed 's/;$//')
+  failures=$(printf '%s' "$body" | grep -oE 'Failed to look up [a-z]+ package [^`]+' \
+             | sed 's/Failed to look up [a-z]* package //' | sort -u | tr '\n' ';' | sed 's/;$//')
+
+  # A dashboard can also report an inability to compute a digest, which is a
+  # distinct failure shape from a flat "no-result" lookup.
+  if [ -z "$failures" ]; then
+    failures=$(printf '%s' "$body" | grep -oE 'Could not determine new digest for update \([^)]*\)' \
+               | sort -u | tr '\n' ';' | sed 's/;$//')
+  fi
+
+  if [ -n "$failures" ]; then
+    printf 'FAILURES\t%s\t#%s\t%s%s\n' "$repo" "$issue_num" "$failures" \
+      "$([ -n "$problems" ] && printf ' || %s' "$problems")"
+  elif [ -n "$problems" ]; then
+    printf 'PROBLEMS\t%s\t#%s\t%s\n' "$repo" "$issue_num" "$problems"
+  else
+    printf 'CLEAN\t%s\t#%s\t-\n' "$repo" "$issue_num"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Sweep
+# ---------------------------------------------------------------------------
+repos=$(discover_repos | sed '/^$/d' | sort -u)
+if [ -z "$repos" ]; then
+  printf 'FATAL: no repos in scope\n' >&2
+  exit 2
+fi
+
+attempted=0
+results=""
+while IFS= read -r repo; do
+  [ -n "$repo" ] || continue
+  attempted=$((attempted + 1))
+  record=$(classify_repo "$repo")
+  results="${results}${record}
+"
+done <<EOF
+$repos
+EOF
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+count_state() {
+  printf '%s' "$results" | grep -c "^$1	"
+}
+
+n_halt=$(count_state HALTED)
+n_fail=$(count_state FAILURES)
+n_prob=$(count_state PROBLEMS)
+n_clean=$(count_state CLEAN)
+n_nodash=$(count_state NO_DASHBOARD)
+n_unread=$(count_state UNREADABLE)
+n_read=$((n_halt + n_fail + n_prob + n_clean + n_nodash))
+
+if [ "$QUIET" -eq 0 ]; then
+  printf '\n=== Renovate health sweep — %s ===\n' "$ORG"
+  printf '%s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  for state in HALTED FAILURES PROBLEMS NO_DASHBOARD UNREADABLE CLEAN; do
+    block=$(printf '%s' "$results" | grep "^${state}	")
+    [ -n "$block" ] || continue
+    printf -- '--- %s ---\n' "$state"
+    printf '%s\n' "$block" | while IFS="$(printf '\t')" read -r st repo num detail; do
+      printf '  %-38s %-6s %s\n' "$repo" "$num" "$detail"
+    done
+    printf '\n'
+  done
+fi
+
+# "Attempted vs achieved" — a sweep that silently skips repos has exactly the
+# defect this script exists to detect, so the numbers are always printed and
+# an incomplete sweep gets its own exit code.
+printf '=== coverage ===\n'
+printf '  attempted        : %s\n' "$attempted"
+printf '  read successfully: %s\n' "$n_read"
+printf '  UNREADABLE       : %s\n' "$n_unread"
+printf '=== findings ===\n'
+printf '  HALTED       : %s\n' "$n_halt"
+printf '  FAILURES     : %s\n' "$n_fail"
+printf '  PROBLEMS     : %s\n' "$n_prob"
+printf '  NO_DASHBOARD : %s\n' "$n_nodash"
+printf '  CLEAN        : %s\n' "$n_clean"
+
+if [ "$n_unread" -gt 0 ]; then
+  printf '\nCOVERAGE INCOMPLETE: %s repo(s) unreadable. A "no failures" result from\n' "$n_unread" >&2
+  printf 'this run does not mean there are none.\n' >&2
+  exit 2
+fi
+
+if [ "$n_halt" -gt 0 ] || [ "$n_fail" -gt 0 ] || [ "$n_prob" -gt 0 ]; then
+  exit 1
+fi
+
+exit 0
