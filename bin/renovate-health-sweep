@@ -208,7 +208,9 @@ EOF
     if [ $? -ne 0 ]; then
       printf '%s\n' "$repo"; return 0
     fi
-    if printf '%s' "$pkg" | jq -e 'has("renovate")' >/dev/null 2>&1; then
+    # Unparseable package.json: could not look, so keep it in scope.
+    if ! printf '%s' "$pkg" | jq -e 'type == "object"' >/dev/null 2>&1 \
+       || printf '%s' "$pkg" | jq -e 'has("renovate")' >/dev/null 2>&1; then
       printf '%s\n' "$repo"; return 0
     fi
   fi
@@ -221,14 +223,20 @@ discover_repos() {
     return 0
   fi
 
-  local all_repos n
-  all_repos=$(gh repo list "$ORG" --limit "$REPO_LIMIT" --json name,isArchived \
-              --jq '.[] | select(.isArchived==false) | .name' 2>"$ERRF")
-  if [ $? -ne 0 ] || [ -z "$all_repos" ]; then
+  local raw all_repos n
+  raw=$(gh repo list "$ORG" --limit "$REPO_LIMIT" --json name,isArchived 2>"$ERRF")
+  if [ $? -ne 0 ] || [ -z "$raw" ]; then
     printf 'FATAL: could not list repos for org %s: %s\n' "$ORG" "$(last_err)" >&2
     return 2
   fi
-  n=$(printf '%s\n' "$all_repos" | grep -c .)
+  # Count BEFORE dropping archived repos: --limit caps the raw list, so a
+  # post-filter count could sit under the limit while the list was truncated.
+  n=$(printf '%s' "$raw" | jq 'length' 2>/dev/null)
+  all_repos=$(printf '%s' "$raw" | jq -r '.[] | select(.isArchived==false) | .name' 2>/dev/null)
+  if [ -z "$n" ] || [ -z "$all_repos" ]; then
+    printf 'FATAL: could not parse the repo list for org %s\n' "$ORG" >&2
+    return 2
+  fi
   if [ "$n" -ge "$REPO_LIMIT" ]; then
     printf 'FATAL: repo list hit the %s limit; raise REPO_LIMIT\n' "$REPO_LIMIT" >&2
     return 2
@@ -269,15 +277,18 @@ discover_repos() {
 #                 never opened, so this is where an unseen dependency hides.
 #   UNREADABLE    a gh/jq call failed — coverage gap, never counted as clean
 # ---------------------------------------------------------------------------
+# UNREADABLE outranks CLEAN/PROBLEMS/UNRECOGNIZED: an issue we could not read
+# must never be hidden behind one we could (NOTE 6). Only a definite HALTED or
+# FAILURES outranks it, and then the detail says how many issues went unread.
 state_rank() {
   case "$1" in
-    HALTED) echo 6 ;; FAILURES) echo 5 ;; UNRECOGNIZED) echo 4 ;;
-    PROBLEMS) echo 3 ;; CLEAN) echo 2 ;; *) echo 1 ;;
+    HALTED) echo 7 ;; FAILURES) echo 6 ;; UNREADABLE) echo 5 ;;
+    UNRECOGNIZED) echo 4 ;; PROBLEMS) echo 3 ;; CLEAN) echo 2 ;; *) echo 1 ;;
   esac
 }
 
 classify_issue() {
-  local repo="$1" num="$2" body reason failures problems errored
+  local repo="$1" num="$2" body reason failures problems errored updated
   body=$(gh issue view "$num" --repo "${ORG}/${repo}" --json body --jq '.body' 2>"$ERRF")
   if [ $? -ne 0 ]; then
     printf 'UNREADABLE\t%s\t#%s\tgh issue view: %s\n' "$repo" "$num" "$(last_err)"
@@ -326,7 +337,10 @@ classify_issue() {
   elif [ -n "$problems" ]; then
     printf 'PROBLEMS\t%s\t#%s\t%s\n' "$repo" "$num" "$problems"
   else
-    printf 'CLEAN\t%s\t#%s\t-\n' "$repo" "$num"
+    # A dashboard Renovate stopped touching still reads CLEAN; show when it was
+    # last updated so a stale one is visible (no threshold is applied).
+    updated=$(gh issue view "$num" --repo "${ORG}/${repo}" --json updatedAt --jq '.updatedAt' 2>/dev/null | cut -c1-10)
+    printf 'CLEAN\t%s\t#%s\tdashboard last updated %s\n' "$repo" "$num" "${updated:-unknown}"
   fi
 }
 
@@ -357,21 +371,32 @@ classify_repo() {
 
   # NOTE 3 + NOTE 4: author matched client-side, title never matched.
   nums=$(printf '%s' "$issues" \
-         | jq -r '.[] | select(.author.login | test("renovate";"i")) | .number' 2>/dev/null)
+         | jq -r '.[] | select((.author.login // "") | test("renovate";"i")) | .number' 2>/dev/null)
+  if [ $? -ne 0 ]; then
+    printf 'UNREADABLE\t%s\t-\tcould not parse issue authors\n' "$repo"
+    return 0
+  fi
   if [ -z "$nums" ]; then
     printf 'NO_DASHBOARD\t%s\t-\tno Renovate-authored open issue\n' "$repo"
     return 0
   fi
 
-  best=""; best_rank=0
+  best=""; best_rank=0; n_unread_issues=0
   while IFS= read -r num; do
     [ -n "$num" ] || continue
     rec=$(classify_issue "$repo" "$num")
+    case "$rec" in UNREADABLE*) n_unread_issues=$((n_unread_issues + 1)) ;; esac
     rank=$(state_rank "${rec%%	*}")
     if [ "$rank" -gt "$best_rank" ]; then best="$rec"; best_rank="$rank"; fi
   done <<EOF
 $nums
 EOF
+  case "$best" in
+    UNREADABLE*) ;;
+    *) if [ "$n_unread_issues" -gt 0 ]; then
+         best="${best} (+${n_unread_issues} Renovate issue(s) unreadable)"
+       fi ;;
+  esac
   printf '%s\n' "$best"
 }
 
