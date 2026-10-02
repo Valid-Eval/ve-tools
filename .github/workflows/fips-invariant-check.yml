@@ -1,0 +1,33 @@
+name: fips-invariant-check
+
+# The check gates every VE image build, so its own tests gate every change to it.
+on:
+  pull_request:
+    paths:
+      - "fips-invariant-check/**"
+      - ".github/workflows/fips-invariant-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "fips-invariant-check/**"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fips-invariant-check
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: fips-invariant-check/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::run gofmt -w"; exit 1; }
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+      - name: Builds as the static binary the images install
+        run: CGO_ENABLED=0 go build -trimpath -o /tmp/fips-invariant-check . && file /tmp/fips-invariant-check | grep -q 'statically linked'
