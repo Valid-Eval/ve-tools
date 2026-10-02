@@ -28,7 +28,7 @@ func TestEmbeddedReason(t *testing.T) {
 		{"vendored libcrypto in a wheel", fileReport{Path: "/opt/appenv/lib/foo.libs/libcrypto-1a2b3c4d.so.3", Soname: "libcrypto-1a2b3c4d.so.3"}, "vendored OpenSSL"},
 		{"libcrypto outside system dirs", fileReport{Path: "/opt/app/lib/libcrypto.so.3", Soname: "libcrypto.so.3"}, "vendored OpenSSL"},
 		{"NSS", fileReport{Path: "/usr/lib/libssl3.so", Soname: "libssl3.so"}, "Mozilla NSS"},
-		{"Go with std crypto, no FIPS", fileReport{Path: "/usr/bin/credbridge", IsGo: true, GoCrypto: true, GoBuildNote: "CGO_ENABLED=0"}, "Go binary using standard-library crypto"},
+		{"Go with std crypto, no FIPS", fileReport{Path: "/usr/bin/credbridge", IsGo: true, GoCrypto: true, GoBuildNote: "CGO_ENABLED=0"}, "Go binary whose crypto is not a validated FIPS module"},
 		{"Go with FIPS mode", fileReport{Path: "/usr/bin/svc", IsGo: true, GoCrypto: true, GoFIPS: true}, ""},
 		{"Go without crypto", fileReport{Path: "/usr/bin/tool", IsGo: true}, ""},
 	}
@@ -66,19 +66,48 @@ func TestGoFIPSMode(t *testing.T) {
 		}
 		return bi
 	}
+	// Real `go version -m` settings, 2026-10-02 (jacob-82's probes and a local go1.27.1 build).
+	cg127 := []string{"chainguard_go_package", "go-geomys-1.27-1.27.0-r1", "chainguard_cryptographic_module", "geomys",
+		"chainguard_entropy_source", "geomys", "-tags", "fips140v1.0",
+		"DefaultGODEBUG", "fips140=on,tracebacklabels=0,x509sslcertoverrideplatform=0", "CGO_ENABLED", "0", "GOFIPS140", "v1.0.0-c2097c7c"}
+	upV100 := []string{"-tags", "fips140v1.0", "DefaultGODEBUG", "fips140=on", "CGO_ENABLED", "0", "GOFIPS140", "v1.0.0-c2097c7c"}
+	cg126 := []string{"microsoft_systemcrypto", "1", "microsoft_toolset_version", "go1.26.8-microsoft", "-tags", "requirefips",
+		"DefaultGODEBUG", "fips140=on", "CGO_ENABLED", "1", "GOEXPERIMENT", "systemcrypto", "GOFIPS140", "latest"}
+	with := func(base []string, kv ...string) []string {
+		out := append([]string{}, base...)
+		for i := 0; i < len(kv); i += 2 {
+			replaced := false
+			for j := 0; j < len(out); j += 2 {
+				if out[j] == kv[i] {
+					out[j+1], replaced = kv[i+1], true
+				}
+			}
+			if !replaced {
+				out = append(out, kv[i], kv[i+1])
+			}
+		}
+		return out
+	}
 	cases := []struct {
-		bi   *buildinfo.BuildInfo
+		name string
+		kv   []string
 		fips bool
 	}{
-		{mk("CGO_ENABLED", "0"), false},
-		{mk("GOFIPS140", "off"), false},
-		{mk("GOFIPS140", "v1.0.0"), true},
-		{mk("GOEXPERIMENT", "boringcrypto"), true},
-		{mk("-tags", "netgo,requirefips"), true},
+		{"DU go-fips 1.27 native (#5247)", cg127, true},
+		{"DU go-fips 1.27 with fips140=only", with(cg127, "DefaultGODEBUG", "fips140=only"), true},
+		{"upstream GOFIPS140=v1.0.0 (kernel entropy; Jacob: reject)", upV100, false},
+		{"DU 1.27 but fips140 off", with(cg127, "DefaultGODEBUG", "fips140=off"), false},
+		{"DU 1.27 but GOFIPS140=latest", with(cg127, "GOFIPS140", "latest"), false},
+		{"DU 1.27 but entropy not geomys", with(cg127, "chainguard_entropy_source", "kernel"), false},
+		{"DU go-fips 1.26.8.1 systemcrypto (#5132 via OpenSSL)", cg126, true},
+		{"systemcrypto without CGO", with(cg126, "CGO_ENABLED", "0"), false},
+		{"requirefips without systemcrypto", with(cg126, "GOEXPERIMENT", ""), false},
+		{"plain golang (comment-dedup today)", []string{"CGO_ENABLED", "0"}, false},
+		{"boringcrypto", []string{"GOEXPERIMENT", "boringcrypto", "CGO_ENABLED", "1"}, false},
 	}
-	for i, c := range cases {
-		if got, _ := goFIPSMode(c.bi); got != c.fips {
-			t.Errorf("case %d: got fips=%v want %v", i, got, c.fips)
+	for _, c := range cases {
+		if got, note := goFIPSMode(mk(c.kv...)); got != c.fips {
+			t.Errorf("%s: got fips=%v want %v (%s)", c.name, got, c.fips, note)
 		}
 	}
 }

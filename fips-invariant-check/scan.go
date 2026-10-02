@@ -139,31 +139,52 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	return r, nil
 }
 
+// validatedGoFIPS140: a frozen, certified Go Cryptographic Module snapshot, which buildinfo
+// records with its hash (GOFIPS140=v1.0.0 -> "v1.0.0-c2097c7c"). GOFIPS140=latest/inprocess
+// build the UNVALIDATED in-tree module.
+var validatedGoFIPS140 = regexp.MustCompile(`^v1\.0\.[0-9]+-`)
+
+// goFIPSMode accepts exactly the two routes Jacob ruled valid on 2026-10-02 (INF-377). The values
+// are real `go version -m` output from DU and upstream toolchains, collected by the Go-FIPS work:
+//
+//	(A) Native Go Cryptographic Module (CMVP #5247), Chainguard build (DU go-fips >= 1.27):
+//	    GOFIPS140 is a certified snapshot, fips140 is on by default, AND
+//	    chainguard_cryptographic_module=geomys AND chainguard_entropy_source=geomys.
+//	    Upstream Go with GOFIPS140=v1.0.0 has identical settings minus the chainguard_* lines and
+//	    is REJECTED: its entropy comes from the kernel, outside the module boundary, and the
+//	    certificate's caveat gives "no assurance of the minimum strength of generated SSPs".
+//	(B) System OpenSSL (DU go-fips <= 1.26, Microsoft systemcrypto toolset):
+//	    -tags requirefips AND GOEXPERIMENT systemcrypto AND CGO_ENABLED=1. Crypto goes through
+//	    libcrypto -> the Chainguard FIPS provider (#5132); the binary refuses to start without
+//	    it. It reports GOFIPS140=latest, so (B) must not be judged by GOFIPS140.
+//
+// The chainguard_* lines are the toolchain's self-declared build settings, not proof. Whether
+// entropy actually routes through the module is behavioural (the Go probe's job).
 func goFIPSMode(bi *buildinfo.BuildInfo) (bool, string) {
+	set := map[string]string{}
 	var notes []string
-	fips := false
 	for _, s := range bi.Settings {
+		set[s.Key] = s.Value
 		switch s.Key {
-		case "GOFIPS140":
-			notes = append(notes, "GOFIPS140="+s.Value)
-			if s.Value != "" && s.Value != "off" {
-				fips = true
-			}
-		case "GOEXPERIMENT":
-			notes = append(notes, "GOEXPERIMENT="+s.Value)
-			if strings.Contains(s.Value, "boringcrypto") || strings.Contains(s.Value, "systemcrypto") {
-				fips = true
-			}
-		case "-tags":
-			notes = append(notes, "-tags="+s.Value)
-			if strings.Contains(s.Value, "requirefips") {
-				fips = true
-			}
-		case "CGO_ENABLED":
-			notes = append(notes, "CGO_ENABLED="+s.Value)
+		case "GOFIPS140", "DefaultGODEBUG", "-tags", "GOEXPERIMENT", "CGO_ENABLED",
+			"chainguard_cryptographic_module", "chainguard_entropy_source":
+			notes = append(notes, s.Key+"="+s.Value)
 		}
 	}
-	return fips, strings.Join(notes, " ")
+	has := func(key, item string) bool {
+		for _, v := range strings.Split(set[key], ",") {
+			if v == item {
+				return true
+			}
+		}
+		return false
+	}
+	native := validatedGoFIPS140.MatchString(set["GOFIPS140"]) &&
+		(has("DefaultGODEBUG", "fips140=on") || has("DefaultGODEBUG", "fips140=only")) &&
+		set["chainguard_cryptographic_module"] == "geomys" &&
+		set["chainguard_entropy_source"] == "geomys"
+	viaOpenSSL := has("-tags", "requirefips") && has("GOEXPERIMENT", "systemcrypto") && set["CGO_ENABLED"] == "1"
+	return native || viaOpenSSL, strings.Join(notes, " ")
 }
 
 func inDir(p string, dirs []string) bool {
@@ -202,7 +223,7 @@ func embeddedReason(r *fileReport) string {
 		return "carries a compiled-in crypto library (" + strings.Join(r.Markers, ", ") + ", with its source paths) and links no system libcrypto/libssl (stripped embedded copy)"
 	}
 	if r.IsGo && r.GoCrypto && !r.GoFIPS {
-		return "Go binary using standard-library crypto without a FIPS mode (" + r.GoBuildNote + ")"
+		return "Go binary whose crypto is not a validated FIPS module: needs the Chainguard native Go module build (certified GOFIPS140 snapshot + fips140=on + chainguard geomys module/entropy; CMVP #5247) or the system-OpenSSL route (requirefips + systemcrypto + CGO); has " + r.GoBuildNote
 	}
 	return ""
 }

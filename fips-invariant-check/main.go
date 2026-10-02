@@ -6,10 +6,12 @@
 //  1. ONE OpenSSL core. Every binary and library that links OpenSSL links the same major
 //     (libcrypto.so.N). Two cores in one process cannot both initialise the single FIPS provider
 //     module: whichever loads second fails ("could not generate nonce" from libpq, 2026-10-02).
-//  2. NO embedded crypto. No binary carries its own crypto library (a precompiled gem or wheel that
-//     statically links OpenSSL/BoringSSL/AWS-LC, a vendored libcrypto, a Go binary using
-//     standard-library crypto without a FIPS mode). Those never touch the FIPS provider and do
-//     not fail: they silently run non-validated crypto.
+//  2. NO unvalidated crypto. No binary carries its own crypto library (a precompiled gem or wheel
+//     that statically links OpenSSL/BoringSSL/AWS-LC, a vendored libcrypto, Mozilla NSS). Those
+//     never touch the FIPS provider and do not fail: they silently run non-validated crypto.
+//     Go binaries are the one sanctioned second module: they pass only when built on the
+//     validated Go Cryptographic Module (GOFIPS140=v1.0.0, fips140=on by default; CMVP #5247) or
+//     with -tags requirefips (golang-fips/openssl, i.e. the system FIPS provider).
 //
 // Structural checks cannot prove behaviour, so the image can also register a behavioural probe
 // (--probe ... or the FIPS_INVARIANT_PROBE env var) that this tool runs after the scan: a
@@ -114,10 +116,21 @@ func run() int {
 	// Rule 1: one OpenSSL core.
 	present := map[string][]string{} // major -> system core files present
 	linkers := map[string][]string{} // major -> files that link it
+	var coreAllowed []string
 	for _, r := range reports {
 		if major, ok := systemCoreMajor(r); ok {
 			present[major] = append(present[major], r.Path)
 			continue
+		}
+		if len(r.NeededCores) > 0 {
+			// An exemption also takes a file out of the core count. The rule is deliberately
+			// image-wide (stricter than the per-process hazard), so a build tool that runs as its
+			// own process and never loads the application's libraries (e.g. a toolchain linking
+			// another core) is exempted by name, with its reason printed.
+			if e := findAllow(allow, r.Path); e != nil {
+				coreAllowed = append(coreAllowed, fmt.Sprintf("ALLOWED %s links %s\n        exemption (%s): %s", r.Path, strings.Join(r.NeededCores, ", "), e.Source, e.Reason))
+				continue
+			}
 		}
 		for _, n := range r.NeededCores {
 			major := coreSoname.FindStringSubmatch(n)[2]
@@ -140,6 +153,9 @@ func run() int {
 		fmt.Printf("ok    one OpenSSL core linked: libcrypto.so.%s (%d files)\n", majors[0], len(linkers[majors[0]]))
 	default:
 		fmt.Println("ok    no file links a system OpenSSL")
+	}
+	for _, a := range coreAllowed {
+		fmt.Printf("      %s\n", a)
 	}
 	for _, m := range sortedKeys(present) {
 		if len(linkers[m]) == 0 {
@@ -165,7 +181,7 @@ func run() int {
 	}
 	if len(violations) > 0 {
 		failed = true
-		fmt.Printf("FAIL  %d file(s) carry their own crypto instead of using the system FIPS OpenSSL:\n", len(violations))
+		fmt.Printf("FAIL  %d file(s) do crypto outside a validated FIPS module:\n", len(violations))
 		for _, v := range violations {
 			fmt.Printf("        %s\n", v)
 		}
