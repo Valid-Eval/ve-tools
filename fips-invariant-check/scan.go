@@ -3,22 +3,32 @@ package main
 import (
 	"debug/buildinfo"
 	"debug/elf"
+	"debug/gosym"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
 // cryptoSymbols are core entry points every OpenSSL-family library (OpenSSL, BoringSSL, AWS-LC,
-// LibreSSL) DEFINES. A file that defines one carries its own crypto implementation. Version
-// strings alone are not evidence: anything compiled against the system OpenSSL headers carries
-// "OpenSSL x.y.z" text (Ruby's openssl.so, puma), while linking the system library.
+// LibreSSL) DEFINES; Heimdal's hcrypto defines them under an hc_ prefix. A file that defines one
+// carries its own crypto implementation. Version strings alone are not evidence: anything
+// compiled against the system OpenSSL headers carries "OpenSSL x.y.z" text (Ruby's openssl.so,
+// puma), while linking the system library. A generic "any prefix" match is deliberately not
+// used: CPython's _ssl defines a local _ssl_RAND_bytes wrapper around the system OpenSSL.
 var cryptoSymbols = map[string]bool{
-	"RAND_bytes":          true,
-	"EVP_DigestInit_ex":   true,
-	"OPENSSL_init_crypto": true,
+	"RAND_bytes":           true,
+	"EVP_DigestInit_ex":    true,
+	"OPENSSL_init_crypto":  true,
+	"hc_RAND_bytes":        true,
+	"hc_EVP_DigestInit_ex": true,
 }
 
 // cryptoLibMarker names a crypto library. On its own it proves nothing: git carries
@@ -30,20 +40,13 @@ var cryptoLibMarker = regexp.MustCompile(`OpenSSL [0-9]+\.[0-9]+\.[0-9]+|BoringS
 // embedded copy in a binary whose symbols are gone.
 var cryptoSourceMarker = regexp.MustCompile(`crypto/(evp|rand|fipsmodule|sha|bn|ec)/[a-z0-9_]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
 
-// nssSonames are Mozilla NSS, a separate crypto stack (Chromium uses it), never the FIPS provider.
-var nssSonames = map[string]bool{
-	"libnss3.so": true, "libssl3.so": true, "libsmime3.so": true, "libfreebl3.so": true,
-	"libfreeblpriv3.so": true, "libsoftokn3.so": true, "libnssckbi.so": true,
-}
-
-// otherCryptoLibs are independent crypto implementations, recognised by soname. They name their
-// entry points differently (Heimdal's hcrypto exports hc_RAND_bytes / hc_EVP_DigestInit_ex), so
-// the exact-name symbol check cannot see them. A generic "any prefix" match would false-positive
-// on CPython's _ssl, which defines a local _ssl_RAND_bytes wrapper around the system OpenSSL.
+// otherCryptoLibs are independent crypto implementations, recognised by soname because they do
+// not export the OpenSSL entry-point names.
 var otherCryptoLibs = []struct {
 	soname *regexp.Regexp
 	name   string
 }{
+	{regexp.MustCompile(`^lib(nss3|ssl3|smime3|freebl3|freeblpriv3|softokn3|nssckbi)\.so$`), "Mozilla NSS"},
 	{regexp.MustCompile(`^libhcrypto\.so(\.|$)`), "Heimdal hcrypto"},
 	{regexp.MustCompile(`^libgcrypt\.so(\.|$)`), "libgcrypt"},
 	{regexp.MustCompile(`^lib(nettle|hogweed)\.so(\.|$)`), "Nettle"},
@@ -52,12 +55,43 @@ var otherCryptoLibs = []struct {
 	{regexp.MustCompile(`^libwolfssl\.so(\.|$)`), "wolfSSL"},
 }
 
-// heimdalSymbols catch a Heimdal hcrypto copy that is not shipped under its own soname.
-var heimdalSymbols = map[string]bool{"hc_RAND_bytes": true, "hc_EVP_DigestInit_ex": true}
+// goUsesCrypto reports whether a Go binary has standard-library crypto compiled in, from its
+// function table (.gopclntab, which the runtime needs and stripping does not remove): any
+// function in a crypto/ package. Since Go 1.24 every primitive lives under
+// crypto/internal/fips140/, so this catches any use. It reads compiled functions, not bytes: a
+// byte search for "crypto/..." matches binaries that merely contain such text (this tool's own
+// patterns, an error message), which is not crypto use.
+func goUsesCrypto(f *elf.File) (bool, error) {
+	pcln := f.Section(".gopclntab")
+	if pcln == nil {
+		pcln = f.Section(".data.rel.ro.gopclntab") // some PIE layouts
+	}
+	text := f.Section(".text")
+	if pcln == nil || text == nil {
+		return false, errors.New("Go binary without a readable function table (.gopclntab)")
+	}
+	data, err := pcln.Data()
+	if err != nil {
+		return false, fmt.Errorf("reading .gopclntab: %v", err)
+	}
+	tab, err := gosym.NewTable(nil, gosym.NewLineTable(data, text.Addr))
+	if err != nil {
+		return false, fmt.Errorf("parsing .gopclntab: %v", err)
+	}
+	for _, fn := range tab.Funcs {
+		if isCryptoFunc(fn.Name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
-// goCryptoMarker: function names a Go binary carries (in its pclntab, which stripping does not
-// remove) when it does TLS or symmetric/hash crypto through the standard library.
-var goCryptoMarker = regexp.MustCompile(`crypto/tls\.\(\*Conn\)\.Handshake|crypto/aes\.NewCipher|crypto/sha256\.Sum256`)
+// isCryptoFunc: a function in a standard-library crypto package, such as "crypto/sha256.Sum256"
+// or "crypto/internal/fips140/aes.(*Block).Encrypt", or in golang.org/x/crypto.
+// golang.org/x/crypto implementations (chacha20, ssh, ...) are crypto too, and not validated.
+func isCryptoFunc(name string) bool {
+	return strings.HasPrefix(name, "crypto/") || strings.HasPrefix(name, "golang.org/x/crypto/")
+}
 
 var coreSoname = regexp.MustCompile(`^lib(crypto|ssl)\.so\.([0-9]+)$`)
 
@@ -72,10 +106,12 @@ var systemLibDirs = map[string]bool{
 	"/usr/lib/x86_64-linux-gnu": true, "/usr/lib/aarch64-linux-gnu": true,
 }
 
-// providerDirs hold OpenSSL provider modules (fips.so, legacy.so). They define crypto by design.
+// providerDirs hold OpenSSL provider modules (fips.so, legacy.so) and OpenSSL 3 engines. They
+// define crypto by design and are loaded by the system core.
 var providerDirs = []string{"/usr/lib/ossl-modules", "/usr/lib64/ossl-modules", "/usr/lib/engines-3"}
 
-const maxMarkerScanBytes = 768 << 20
+// skipDirs are virtual filesystems, never image content.
+var skipDirs = map[string]bool{"/proc": true, "/sys": true, "/dev": true, "/run": true}
 
 type fileReport struct {
 	Path        string   // absolute path inside the image
@@ -85,12 +121,66 @@ type fileReport struct {
 	Markers     []string // crypto-library version markers found in the bytes
 	HasSource   bool     // the bytes also carry the library's own source paths (compiled-in copy)
 	IsGo        bool
-	GoFIPS      bool   // built with a FIPS crypto mode (GOFIPS140, boringcrypto, requirefips)
+	GoFIPS      bool   // built on one of the two accepted routes (see goFIPSMode)
 	GoCrypto    bool   // Go binary that uses standard-library crypto
 	GoBuildNote string // the settings that decided GoFIPS, for the report
 }
 
-// analyze returns nil for non-ELF files.
+// scan walks root and analyzes every ELF file. Anything it cannot inspect is returned in
+// unscanned ("<image path>: <why>"); the caller fails on it. It returns an error when the scan
+// cannot mean anything: the root itself is unreadable, or it holds no ELF file at all (a wrong
+// -root, or an empty mount, would otherwise read as a clean image).
+func scan(root, self string) (reports []*fileReport, unscanned []string, err error) {
+	walkErr := filepath.WalkDir(root, func(real string, d fs.DirEntry, err error) error {
+		ip := imagePath(root, real)
+		if err != nil {
+			if real == root {
+				return err
+			}
+			unscanned = append(unscanned, fmt.Sprintf("%s: %v", ip, err))
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if skipDirs[ip] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() || (self != "" && real == self) {
+			return nil // symlinks are reported through their targets
+		}
+		info, err := d.Info()
+		if err != nil {
+			unscanned = append(unscanned, fmt.Sprintf("%s: %v", ip, err))
+			return nil
+		}
+		if !isELFCandidate(d.Name(), info.Size()) {
+			return nil
+		}
+		r, err := analyze(real, ip)
+		if err != nil {
+			unscanned = append(unscanned, fmt.Sprintf("%s: %v", ip, err))
+			return nil
+		}
+		if r != nil {
+			reports = append(reports, r)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return nil, nil, fmt.Errorf("scanning %s: %v", root, walkErr)
+	}
+	if len(reports) == 0 && len(unscanned) == 0 {
+		return nil, nil, fmt.Errorf("no ELF files under %s: wrong -root?", root)
+	}
+	slices.SortFunc(reports, func(a, b *fileReport) int { return strings.Compare(a.Path, b.Path) })
+	return reports, unscanned, nil
+}
+
+// analyze returns (nil, nil) for a file that is not ELF, and an error for one it cannot inspect.
 func analyze(realPath, imagePath string) (*fileReport, error) {
 	fh, err := os.Open(realPath)
 	if err != nil {
@@ -103,9 +193,8 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	}
 	f, err := elf.NewFile(fh)
 	if err != nil {
-		return nil, nil // corrupt or exotic ELF: not something a loader would map either
+		return nil, fmt.Errorf("ELF magic but unparseable: %v", err)
 	}
-	defer f.Close()
 
 	r := &fileReport{Path: imagePath}
 	if libs, err := f.ImportedLibraries(); err == nil {
@@ -125,36 +214,40 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 			continue // stripped: no .symtab; the marker scan below covers this case
 		}
 		for _, s := range syms {
-			if (cryptoSymbols[s.Name] || heimdalSymbols[s.Name]) && s.Section != elf.SHN_UNDEF && !seen[s.Name] {
+			if cryptoSymbols[s.Name] && s.Section != elf.SHN_UNDEF {
 				seen[s.Name] = true
-				r.Defines = append(r.Defines, s.Name)
 			}
 		}
 	}
-	sort.Strings(r.Defines)
+	r.Defines = slices.Sorted(maps.Keys(seen))
 
 	if bi, err := buildinfo.ReadFile(realPath); err == nil {
 		r.IsGo = true
 		r.GoFIPS, r.GoBuildNote = goFIPSMode(bi)
+		if r.GoCrypto, err = goUsesCrypto(f); err != nil {
+			return nil, err
+		}
+	} else if !strings.Contains(err.Error(), "not a Go executable") {
+		// A Go binary whose build info cannot be read (packed, post-processed) would otherwise
+		// be classified as non-Go and skip the Go rule entirely.
+		return nil, fmt.Errorf("Go build info unreadable: %v", err)
 	}
 
-	if st, err := fh.Stat(); err == nil && st.Size() <= maxMarkerScanBytes {
-		data, err := os.ReadFile(realPath)
-		if err == nil {
-			m := map[string]bool{}
-			for _, b := range cryptoLibMarker.FindAll(data, -1) {
-				m[string(b)] = true
-			}
-			for k := range m {
-				r.Markers = append(r.Markers, k)
-			}
-			sort.Strings(r.Markers)
-			r.HasSource = len(r.Markers) > 0 && cryptoSourceMarker.Match(data)
-			if r.IsGo {
-				r.GoCrypto = goCryptoMarker.Match(data)
-			}
-		}
+	// Read the whole file through the handle already open (no size cap: a skipped scan would
+	// read as "no crypto found").
+	if _, err := fh.Seek(0, io.SeekStart); err != nil {
+		return nil, err
 	}
+	data, err := io.ReadAll(fh)
+	if err != nil {
+		return nil, err
+	}
+	markers := map[string]bool{}
+	for _, b := range cryptoLibMarker.FindAll(data, -1) {
+		markers[string(b)] = true
+	}
+	r.Markers = slices.Sorted(maps.Keys(markers))
+	r.HasSource = len(r.Markers) > 0 && cryptoSourceMarker.Match(data)
 	return r, nil
 }
 
@@ -163,8 +256,8 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 // build the UNVALIDATED in-tree module.
 var validatedGoFIPS140 = regexp.MustCompile(`^v1\.0\.[0-9]+-`)
 
-// goFIPSMode accepts exactly the two routes Jacob ruled valid on 2026-10-02 (INF-377). The values
-// are real `go version -m` output from DU and upstream toolchains, collected by the Go-FIPS work:
+// goFIPSMode accepts exactly the two routes ruled valid on 2026-10-02 (INF-377), matched against
+// real `go version -m` output from DU and upstream toolchains:
 //
 //	(A) Native Go Cryptographic Module (CMVP #5247), Chainguard build (DU go-fips >= 1.27):
 //	    GOFIPS140 is a certified snapshot, fips140 is on by default, AND
@@ -177,8 +270,9 @@ var validatedGoFIPS140 = regexp.MustCompile(`^v1\.0\.[0-9]+-`)
 //	    libcrypto -> the Chainguard FIPS provider (#5132); the binary refuses to start without
 //	    it. It reports GOFIPS140=latest, so (B) must not be judged by GOFIPS140.
 //
-// The chainguard_* lines are the toolchain's self-declared build settings, not proof. Whether
-// entropy actually routes through the module is behavioural (the Go probe's job).
+// The chainguard_* lines are the toolchain's self-declared build settings, not proof, and a
+// runtime GODEBUG=fips140=off would switch FIPS mode off in a route (A) binary; neither is
+// visible to a build-time scan.
 func goFIPSMode(bi *buildinfo.BuildInfo) (bool, string) {
 	set := map[string]string{}
 	var notes []string
@@ -190,14 +284,7 @@ func goFIPSMode(bi *buildinfo.BuildInfo) (bool, string) {
 			notes = append(notes, s.Key+"="+s.Value)
 		}
 	}
-	has := func(key, item string) bool {
-		for _, v := range strings.Split(set[key], ",") {
-			if v == item {
-				return true
-			}
-		}
-		return false
-	}
+	has := func(key, item string) bool { return slices.Contains(strings.Split(set[key], ","), item) }
 	native := validatedGoFIPS140.MatchString(set["GOFIPS140"]) &&
 		(has("DefaultGODEBUG", "fips140=on") || has("DefaultGODEBUG", "fips140=only")) &&
 		set["chainguard_cryptographic_module"] == "geomys" &&
@@ -207,12 +294,7 @@ func goFIPSMode(bi *buildinfo.BuildInfo) (bool, string) {
 }
 
 func inDir(p string, dirs []string) bool {
-	for _, d := range dirs {
-		if strings.HasPrefix(p, d+"/") {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(dirs, func(d string) bool { return strings.HasPrefix(p, d+"/") })
 }
 
 // systemCoreMajor returns the OpenSSL major ("3", "4") if r IS a system libcrypto/libssl.
@@ -224,7 +306,7 @@ func systemCoreMajor(r *fileReport) (string, bool) {
 	return m[2], true
 }
 
-// embeddedReason explains why r carries its own crypto implementation, or returns "".
+// embeddedReason explains why r does crypto outside a validated FIPS module, or returns "".
 func embeddedReason(r *fileReport) string {
 	if _, ok := systemCoreMajor(r); ok || inDir(r.Path, providerDirs) {
 		return ""
@@ -233,9 +315,6 @@ func embeddedReason(r *fileReport) string {
 		if l.soname.MatchString(r.Soname) {
 			return l.name + " crypto library (" + r.Soname + "), a separate crypto stack outside a validated FIPS module"
 		}
-	}
-	if nssSonames[r.Soname] {
-		return "Mozilla NSS crypto library (" + r.Soname + "), a separate crypto stack outside a validated FIPS module"
 	}
 	if coreSoname.MatchString(r.Soname) || vendoredCoreSoname.MatchString(r.Soname) {
 		return "vendored OpenSSL library outside the system lib dirs (soname " + r.Soname + ")"
@@ -261,8 +340,5 @@ func markerSuffix(r *fileReport) string {
 
 // isELFCandidate cheaply skips files that cannot be ELF objects.
 func isELFCandidate(name string, size int64) bool {
-	if size < 64 {
-		return false
-	}
-	return !strings.HasSuffix(name, ".py") // trivially common, never ELF
+	return size >= 64 && !strings.HasSuffix(name, ".py") // .py: trivially common, never ELF
 }

@@ -32,7 +32,6 @@ func TestEmbeddedReason(t *testing.T) {
 		{"Heimdal symbols without its soname", fileReport{Path: "/opt/x/libfoo.so", Defines: []string{"hc_RAND_bytes"}}, "defines its own hc_RAND_bytes"},
 		{"libgcrypt", fileReport{Path: "/usr/lib/libgcrypt.so.20", Soname: "libgcrypt.so.20"}, "libgcrypt"},
 		{"GnuTLS", fileReport{Path: "/usr/lib/libgnutls.so.30", Soname: "libgnutls.so.30"}, "GnuTLS"},
-		{"CPython _ssl local wrapper is not a definition we count", fileReport{Path: "/usr/lib/python3.14/lib-dynload/_ssl.so", NeededCores: []string{"libssl.so.3"}}, ""},
 		{"Go with std crypto, no FIPS", fileReport{Path: "/usr/bin/credbridge", IsGo: true, GoCrypto: true, GoBuildNote: "CGO_ENABLED=0"}, "Go binary whose crypto is not a validated FIPS module"},
 		{"Go with FIPS mode", fileReport{Path: "/usr/bin/svc", IsGo: true, GoCrypto: true, GoFIPS: true}, ""},
 		{"Go without crypto", fileReport{Path: "/usr/bin/tool", IsGo: true}, ""},
@@ -104,6 +103,7 @@ func TestGoFIPSMode(t *testing.T) {
 		{"DU 1.27 but fips140 off", with(cg127, "DefaultGODEBUG", "fips140=off"), false},
 		{"DU 1.27 but GOFIPS140=latest", with(cg127, "GOFIPS140", "latest"), false},
 		{"DU 1.27 but entropy not geomys", with(cg127, "chainguard_entropy_source", "kernel"), false},
+		{"DU 1.27 but module not geomys", with(cg127, "chainguard_cryptographic_module", "boringcrypto"), false},
 		{"DU go-fips 1.26.8.1 systemcrypto (#5132 via OpenSSL)", cg126, true},
 		{"systemcrypto without CGO", with(cg126, "CGO_ENABLED", "0"), false},
 		{"requirefips without systemcrypto", with(cg126, "GOEXPERIMENT", ""), false},
@@ -147,7 +147,7 @@ func TestAllowFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 || entries[0].Reason != "dev-only credential helper; builder never ships" {
+	if len(entries) != 2 || entries[0].reason != "dev-only credential helper; builder never ships" {
 		t.Fatalf("parsed %+v", entries)
 	}
 	if findAllow(entries, "/usr/bin/credbridge") == nil {
@@ -161,5 +161,50 @@ func TestAllowFile(t *testing.T) {
 	}
 	if findAllow(entries, "/usr/bin/credbridge2") != nil {
 		t.Error("exact path must not prefix-match")
+	}
+
+	for _, bad := range []string{"/** everything", "/* everything", "/*/bin/** too wide", "/ root"} {
+		if _, err := loadAllowFile(write(bad + "\n")); err == nil {
+			t.Errorf("pattern %q exempts the whole image and must be rejected", strings.Fields(bad)[0])
+		}
+	}
+
+	globDir, err := loadAllowFile(write("/usr/lib/python3.*/site-packages/** builder-only closure\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findAllow(globDir, "/usr/lib/python3.14/site-packages/x/y.so") == nil {
+		t.Error("a glob in the directory part of a /** pattern should match")
+	}
+	if findAllow(globDir, "/usr/lib/python3.14/other/y.so") != nil {
+		t.Error("a /** pattern must not match outside its directory")
+	}
+}
+
+// CPython's _ssl defines a local _ssl_RAND_bytes wrapper around the system OpenSSL; only exact
+// OpenSSL/Heimdal entry-point names may count as "defines its own crypto".
+func TestCryptoSymbolsAreExactNames(t *testing.T) {
+	for _, s := range []string{"_ssl_RAND_bytes", "my_RAND_bytes", "RAND_bytes_ex"} {
+		if cryptoSymbols[s] {
+			t.Errorf("%q must not count as a crypto entry point", s)
+		}
+	}
+	for _, s := range []string{"RAND_bytes", "EVP_DigestInit_ex", "OPENSSL_init_crypto", "hc_RAND_bytes", "hc_EVP_DigestInit_ex"} {
+		if !cryptoSymbols[s] {
+			t.Errorf("%q must count as a crypto entry point", s)
+		}
+	}
+}
+
+func TestIsCryptoFunc(t *testing.T) {
+	for _, s := range []string{"crypto/internal/fips140/sha256.(*Digest).Write", "crypto/sha512.Sum512", "crypto/hmac.New", "crypto/rand.Read", "crypto/ecdsa.Sign", "crypto/x509.ParseCertificate", "crypto/tls.(*Conn).Handshake", "golang.org/x/crypto/chacha20.(*Cipher).XORKeyStream"} {
+		if !isCryptoFunc(s) {
+			t.Errorf("should detect std crypto use in %q", s)
+		}
+	}
+	for _, s := range []string{"debug/elf.NewFile", "hash/crc32.Update", "math/rand.Int", "internal/chacha8rand.(*State).Next", "main.cryptoHelper", "github.com/x/crypto/y.F"} {
+		if isCryptoFunc(s) {
+			t.Errorf("must not treat %q as std crypto", s)
+		}
 	}
 }
