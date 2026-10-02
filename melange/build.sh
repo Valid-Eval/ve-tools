@@ -47,6 +47,19 @@ run_melange build "$RECIPE" \
   --out-dir "$OUT"
 cp "$WORK/melange.rsa.pub" "$OUT/melange.rsa.pub"
 
+# `melange build` does not run a recipe's `test:` pipelines; only `melange test` does. Run them
+# against the packages just built (installed from the output repo, trusted via this run's key), so
+# a failing assertion fails this script instead of never executing.
+echo "=== melange test $(basename "$RECIPE") ($APK_ARCH) ==="
+# melange test bind-mounts <workspace>/<arch> into the test pod but does not create it first.
+mkdir -p "$WORK/test-ws/$APK_ARCH"
+run_melange test "$RECIPE" \
+  --arch "$APK_ARCH" \
+  --runner docker \
+  --workspace-dir "$WORK/test-ws" \
+  --repository-append "$OUT" \
+  --keyring-append "$OUT/melange.rsa.pub"
+
 # Fail here, not at the consumer's `apk add`, if nothing was produced for this arch.
 ls "$OUT/$APK_ARCH"/*.apk >/dev/null 2>&1 || { echo "::error::melange produced no apks for $APK_ARCH"; exit 1; }
 [ -s "$OUT/$APK_ARCH/APKINDEX.tar.gz" ] || { echo "::error::melange produced no signed APKINDEX for $APK_ARCH"; exit 1; }

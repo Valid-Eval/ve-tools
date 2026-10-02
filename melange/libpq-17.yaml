@@ -15,12 +15,22 @@
 # version like any other package, and apk refuses to co-install it with Wolfi's libpq-17 (same
 # /usr/lib/libpq.so.5), so a stray `apk add libpq-17` fails loudly instead of shadowing it.
 #
-# GSSAPI/LDAP/zlib/ICU/readline are disabled: nothing in the fleet authenticates to Postgres via
+# GSSAPI/LDAP/ICU/readline are disabled: nothing in the fleet authenticates to Postgres via
 # Kerberos or LDAP (verified 2026-10-02), and dropping them removes the krb5/ldap/sasl closure.
+# (Wolfi's postgresql-17-client pulls that closure in, and with it a second OpenSSL core in the same
+# process: libk5crypto links libcrypto.so.3 while its libpq links .so.4.)
 #
-# renovate: postgres/postgres -- tag, commit and package version move together; keep these
-# three lines adjacent and in this order (Renovate's replace template rewrites them as a block).
+# zlib is ENABLED, for the client tools only: `pg_dump -Fc` gzip-compresses custom-format archives
+# by default, and a pg_restore built without zlib cannot read them. libpq itself does not link zlib
+# in PostgreSQL 17; the package test below asserts that, so libpq's closure stays libc + OpenSSL.
+#
 vars:
+  # OpenSSL line the consuming images' runtimes link (CPython _ssl, Ruby openssl.so). ONE edit point:
+  # the build env's -dev package and every linkage assertion below derive from these two.
+  openssl-major: "3"
+  openssl-minor: "6"
+  # renovate: postgres/postgres -- tag, commit and package version move together; keep these
+  # three lines adjacent and in this order (Renovate's replace template rewrites them as a block).
   pg-tag: REL_17_11
   pg-commit: 083ac033419f690758508e08c1736089384bbee8
 package:
@@ -48,17 +58,19 @@ environment:
       #  - MINOR (3.6 vs 3.7): same .so.3 soname, so the linkage scan PASSES; the libpq would
       #    reference newer versioned symbols (OPENSSL_3.7.0) and fail only when loaded or resolved.
       #    Only the images' behavioural probes catch this, because they actually exercise libpq.
-      #    The package name below pins the minor, so this bites only if someone edits that line.
+      #    vars.openssl-minor pins it, so this bites only if someone edits that var alone.
       # Not pinned to a PATCH version, unlike the image-side header install: melange builds in a
       # throwaway Wolfi env, so nothing here can upgrade a base image's packages, and OpenSSL adds
       # no symbols in patch releases.
       # Expect this line to break soon: OpenSSL 3.6 reaches end of support on 2026-11-01, and when
-      # Wolfi drops openssl-3.6-dev, melange fails to resolve it (loud, not silent). Move it in
-      # step with whatever OpenSSL line the base images' runtimes move to.
-      - openssl-3.6-dev
+      # Wolfi drops openssl-3.6-dev, melange fails to resolve it (loud, not silent). Move the
+      # openssl-major/openssl-minor vars (top of file) in step with the base images' runtimes; the
+      # package tests' expected sonames follow them.
+      - openssl-${{vars.openssl-major}}.${{vars.openssl-minor}}-dev
       - perl
       - bison
       - flex
+      - zlib-dev
 
 pipeline:
   - uses: git-checkout
@@ -73,7 +85,7 @@ pipeline:
         --with-openssl \
         --without-icu \
         --without-readline \
-        --without-zlib \
+        --with-zlib \
         --without-gssapi \
         --without-ldap
 
@@ -87,7 +99,39 @@ pipeline:
       # Static archive is not shipped: consumers link the shared library.
       rm -f "${{targets.destdir}}"/usr/lib/libpq.a "${{targets.destdir}}"/usr/lib/libpgport*.a "${{targets.destdir}}"/usr/lib/libpgcommon*.a
 
+  # Client tools for ve-postgresql-17-client: only the four the fleet runs (ve-app's backend e2e
+  # flow and dev image: pg_dump, pg_restore, psql, pg_isready). The Makefiles build libpgport,
+  # libpgcommon and libpgfeutils as submakes; those link statically, so the tools need only libpq.
+  - runs: |
+      make -C src/bin/pg_dump -j$(nproc)
+      make -C src/bin/psql -j$(nproc)
+      make -C src/bin/scripts pg_isready -j$(nproc)
+      for b in src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore src/bin/psql/psql src/bin/scripts/pg_isready; do
+        install -Dm755 "$b" "${{targets.destdir}}/usr/bin/$(basename "$b")"
+      done
+
   - uses: strip
+
+# Checked on the INSTALLED package, so a configure or toolchain change that drags another library
+# into libpq's closure (zlib, krb5, a second OpenSSL major) fails the build here, not in an image.
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - binutils
+        - busybox
+  pipeline:
+    - runs: |
+        # The dynamic loader is listed on some arches (aarch64 glibc) and not others; it isn't a dependency
+        # anyone chooses, so it is the one entry ignored.
+        needed="$(readelf -d /usr/lib/libpq.so.5 | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | grep -v '^ld-linux-' | sort | tr '\n' ' ')"
+        echo "libpq.so.5 NEEDED: $needed"
+        [ "$needed" = "libc.so.6 libcrypto.so.${{vars.openssl-major}} libm.so.6 libssl.so.${{vars.openssl-major}} " ] || {
+          echo "FAIL: libpq.so.5 must link exactly libc, libm, libssl.so.${{vars.openssl-major}} and libcrypto.so.${{vars.openssl-major}}" >&2; exit 1; }
 
 subpackages:
   - name: ve-libpq-17-dev
@@ -102,3 +146,51 @@ subpackages:
     dependencies:
       runtime:
         - ve-libpq-17
+
+  - name: ve-postgresql-17-client
+    description: "pg_dump, pg_restore, psql and pg_isready linked against ve-libpq-17 (OpenSSL 3), with zlib for compressed archives"
+    pipeline:
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}"/usr/bin
+          for b in pg_dump pg_restore psql pg_isready; do
+            mv "${{targets.destdir}}/usr/bin/$b" "${{targets.subpkgdir}}"/usr/bin/
+          done
+    dependencies:
+      runtime:
+        - ve-libpq-17
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - binutils
+            - busybox
+      pipeline:
+        - runs: |
+            loader="$(ls /lib/ld-linux-*.so.* | head -1)"
+            [ -x "$loader" ] || { echo "FAIL: no dynamic loader found" >&2; exit 1; }
+            for b in pg_dump pg_restore psql pg_isready; do
+              "$b" --version
+              needed="$(readelf -d "/usr/bin/$b" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')"
+              echo "$b NEEDED: $(echo $needed)"
+              echo "$needed" | grep -q '^libpq\.so\.5$' || { echo "FAIL: $b does not link libpq.so.5" >&2; exit 1; }
+              # Judge the RESOLVED closure, not the tool's own NEEDED. pg_dump/pg_restore link
+              # libcrypto directly (PostgreSQL's static libpgcommon hashes via OpenSSL), and a second
+              # core typically arrives one level down: Wolfi's client passes a NEEDED-only check while
+              # its libpq and krb5 load libcrypto.so.4 next to .so.3.
+              cores="$("$loader" --list "/usr/bin/$b" | sed -n 's/^[[:space:]]*\(lib\(crypto\|ssl\)\.so\.[0-9]*\) =>.*/\1/p' | sort -u | tr '\n' ' ')"
+              echo "$b OpenSSL closure: $cores"
+              [ "$cores" = "libcrypto.so.${{vars.openssl-major}} libssl.so.${{vars.openssl-major}} " ] || {
+                echo "FAIL: $b must load exactly libcrypto.so.${{vars.openssl-major}} + libssl.so.${{vars.openssl-major}} (via libpq), no other OpenSSL" >&2; exit 1; }
+            done
+            # zlib must be compiled in. Option validation rejects gzip compression before any
+            # connection attempt when it isn't, so this needs no server.
+            out="$(pg_dump -Fc -Z gzip:1 -h /nonexistent -d x 2>&1 || true)"
+            echo "pg_dump -Z gzip probe: $out"
+            if echo "$out" | grep -qi 'not support'; then
+              echo "FAIL: pg_dump built without zlib" >&2; exit 1
+            fi
+            echo "$out" | grep -qi 'connection' || { echo "FAIL: unexpected pg_dump probe output" >&2; exit 1; }
