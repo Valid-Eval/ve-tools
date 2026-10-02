@@ -24,9 +24,13 @@
 # by default, and a pg_restore built without zlib cannot read them. libpq itself does not link zlib
 # in PostgreSQL 17; the package test below asserts that, so libpq's closure stays libc + OpenSSL.
 #
-# renovate: postgres/postgres -- tag, commit and package version move together; keep these
-# three lines adjacent and in this order (Renovate's replace template rewrites them as a block).
 vars:
+  # OpenSSL line the consuming images' runtimes link (CPython _ssl, Ruby openssl.so). ONE edit point:
+  # the build env's -dev package and every linkage assertion below derive from these two.
+  openssl-major: "3"
+  openssl-minor: "6"
+  # renovate: postgres/postgres -- tag, commit and package version move together; keep these
+  # three lines adjacent and in this order (Renovate's replace template rewrites them as a block).
   pg-tag: REL_17_11
   pg-commit: 083ac033419f690758508e08c1736089384bbee8
 package:
@@ -54,14 +58,15 @@ environment:
       #  - MINOR (3.6 vs 3.7): same .so.3 soname, so the linkage scan PASSES; the libpq would
       #    reference newer versioned symbols (OPENSSL_3.7.0) and fail only when loaded or resolved.
       #    Only the images' behavioural probes catch this, because they actually exercise libpq.
-      #    The package name below pins the minor, so this bites only if someone edits that line.
+      #    vars.openssl-minor pins it, so this bites only if someone edits that var alone.
       # Not pinned to a PATCH version, unlike the image-side header install: melange builds in a
       # throwaway Wolfi env, so nothing here can upgrade a base image's packages, and OpenSSL adds
       # no symbols in patch releases.
       # Expect this line to break soon: OpenSSL 3.6 reaches end of support on 2026-11-01, and when
-      # Wolfi drops openssl-3.6-dev, melange fails to resolve it (loud, not silent). Move it in
-      # step with whatever OpenSSL line the base images' runtimes move to.
-      - openssl-3.6-dev
+      # Wolfi drops openssl-3.6-dev, melange fails to resolve it (loud, not silent). Move the
+      # openssl-major/openssl-minor vars (top of file) in step with the base images' runtimes; the
+      # package tests' expected sonames follow them.
+      - openssl-${{vars.openssl-major}}.${{vars.openssl-minor}}-dev
       - perl
       - bison
       - flex
@@ -125,8 +130,8 @@ test:
         # anyone chooses, so it is the one entry ignored.
         needed="$(readelf -d /usr/lib/libpq.so.5 | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | grep -v '^ld-linux-' | sort | tr '\n' ' ')"
         echo "libpq.so.5 NEEDED: $needed"
-        [ "$needed" = "libc.so.6 libcrypto.so.3 libm.so.6 libssl.so.3 " ] || {
-          echo "FAIL: libpq.so.5 must link exactly libc, libm, libssl.so.3 and libcrypto.so.3" >&2; exit 1; }
+        [ "$needed" = "libc.so.6 libcrypto.so.${{vars.openssl-major}} libm.so.6 libssl.so.${{vars.openssl-major}} " ] || {
+          echo "FAIL: libpq.so.5 must link exactly libc, libm, libssl.so.${{vars.openssl-major}} and libcrypto.so.${{vars.openssl-major}}" >&2; exit 1; }
 
 subpackages:
   - name: ve-libpq-17-dev
@@ -178,8 +183,8 @@ subpackages:
               # its libpq and krb5 load libcrypto.so.4 next to .so.3.
               cores="$("$loader" --list "/usr/bin/$b" | sed -n 's/^[[:space:]]*\(lib\(crypto\|ssl\)\.so\.[0-9]*\) =>.*/\1/p' | sort -u | tr '\n' ' ')"
               echo "$b OpenSSL closure: $cores"
-              [ "$cores" = "libcrypto.so.3 libssl.so.3 " ] || {
-                echo "FAIL: $b must load exactly libcrypto.so.3 + libssl.so.3 (via libpq), no other OpenSSL" >&2; exit 1; }
+              [ "$cores" = "libcrypto.so.${{vars.openssl-major}} libssl.so.${{vars.openssl-major}} " ] || {
+                echo "FAIL: $b must load exactly libcrypto.so.${{vars.openssl-major}} + libssl.so.${{vars.openssl-major}} (via libpq), no other OpenSSL" >&2; exit 1; }
             done
             # zlib must be compiled in. Option validation rejects gzip compression before any
             # connection attempt when it isn't, so this needs no server.
