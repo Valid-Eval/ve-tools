@@ -235,7 +235,7 @@ func embeddedReason(r *fileReport) string {
 		}
 	}
 	if nssSonames[r.Soname] {
-		return "Mozilla NSS crypto library (" + r.Soname + "), a separate crypto stack outside the FIPS provider"
+		return "Mozilla NSS crypto library (" + r.Soname + "), a separate crypto stack outside a validated FIPS module"
 	}
 	if coreSoname.MatchString(r.Soname) || vendoredCoreSoname.MatchString(r.Soname) {
 		return "vendored OpenSSL library outside the system lib dirs (soname " + r.Soname + ")"

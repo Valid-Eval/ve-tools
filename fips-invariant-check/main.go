@@ -65,6 +65,7 @@ func run() int {
 	// exemptions only if it keeps the base's files.
 	defaults, _ := filepath.Glob(filepath.Join(rootAbs, defaultAllowDir, "*.allow"))
 	var allow []*allowEntry
+	var strictPresent []string
 	failed := false
 	if *strict {
 		// Runtime images set FIPS_INVARIANT_STRICT=1 and every image built FROM them inherits it.
@@ -72,8 +73,11 @@ func run() int {
 		// from a builder stage, say) would be a silent hole, so its mere presence fails.
 		if present := append(defaults, allowFiles...); len(present) > 0 {
 			failed = true
-			fmt.Println("=== fips-invariant-check (strict) ===")
-			fmt.Printf("FAIL  strict mode: exemption files are present, and production images may carry none: %s\n", strings.Join(present, ", "))
+			shown := make([]string, len(present))
+			for i, p := range present {
+				shown[i] = "/" + strings.TrimPrefix(strings.TrimPrefix(p, rootAbs), "/")
+			}
+			strictPresent = shown
 		}
 	} else {
 		for _, name := range append(defaults, allowFiles...) {
@@ -126,6 +130,9 @@ func run() int {
 
 	if *strict {
 		fmt.Println("=== fips-invariant-check (strict: no exemptions) ===")
+		if len(strictPresent) > 0 {
+			fmt.Printf("FAIL  strict mode: exemption files are present, and production images may carry none: %s\n", strings.Join(strictPresent, ", "))
+		}
 	} else {
 		fmt.Println("=== fips-invariant-check ===")
 	}
