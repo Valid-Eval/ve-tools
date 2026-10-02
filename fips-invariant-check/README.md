@@ -52,6 +52,7 @@ Exemptions go in `/etc/fips-invariant-check/allow.d/*.allow` inside the image, o
 - **An entry exempts a file from both rules.** It also takes the file out of the OpenSSL-core count. The core rule is deliberately image-wide, stricter than the per-process hazard, so a build tool that runs as its own process and links another core (e.g. a Rust toolchain built against OpenSSL 4) can be exempted by name.
 - **Every entry needs a reason.** It's printed every time the entry is used, so an exemption is always visible in the build log.
 - **Stale entries are flagged:** an entry that matches nothing produces a warning.
+- **Production images run in strict mode.** Runtime bases set `FIPS_INVARIANT_STRICT=1` (or pass `-strict`), and every image built FROM them inherits it. In strict mode no exemption applies, and the presence of any allowlist file is itself a failure. An exemption copied out of a builder stage can therefore never open a hole in production.
 - **Use them only for things that never ship to production**, such as a builder-only toolchain. Exemptions live in the image, so a downstream image that discards the builder stage also discards its exemptions.
 
 ## Releases

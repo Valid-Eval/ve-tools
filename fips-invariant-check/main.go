@@ -46,6 +46,8 @@ func main() { os.Exit(run()) }
 func run() int {
 	root := flag.String("root", "/", "filesystem root to scan (an extracted image rootfs, or / inside the image)")
 	verbose := flag.Bool("v", false, "list every file that links or carries crypto, not just violations")
+	strict := flag.Bool("strict", os.Getenv("FIPS_INVARIANT_STRICT") == "1",
+		"production mode: honour NO exemptions, and fail if any allowlist file is present (default from FIPS_INVARIANT_STRICT=1)")
 	var allowFiles multiFlag
 	flag.Var(&allowFiles, "allow", "allowlist file (repeatable); files in "+defaultAllowDir+"/*.allow are always loaded")
 	flag.Usage = func() {
@@ -63,12 +65,24 @@ func run() int {
 	// exemptions only if it keeps the base's files.
 	defaults, _ := filepath.Glob(filepath.Join(rootAbs, defaultAllowDir, "*.allow"))
 	var allow []*allowEntry
-	for _, name := range append(defaults, allowFiles...) {
-		entries, err := loadAllowFile(name)
-		if err != nil {
-			return fatal("%v", err)
+	failed := false
+	if *strict {
+		// Runtime images set FIPS_INVARIANT_STRICT=1 and every image built FROM them inherits it.
+		// Exemptions exist for builder-only tooling; one that reached a production image (copied
+		// from a builder stage, say) would be a silent hole, so its mere presence fails.
+		if present := append(defaults, allowFiles...); len(present) > 0 {
+			failed = true
+			fmt.Println("=== fips-invariant-check (strict) ===")
+			fmt.Printf("FAIL  strict mode: exemption files are present, and production images may carry none: %s\n", strings.Join(present, ", "))
 		}
-		allow = append(allow, entries...)
+	} else {
+		for _, name := range append(defaults, allowFiles...) {
+			entries, err := loadAllowFile(name)
+			if err != nil {
+				return fatal("%v", err)
+			}
+			allow = append(allow, entries...)
+		}
 	}
 
 	self, _ := os.Executable()
@@ -110,8 +124,11 @@ func run() int {
 	}
 	sort.Slice(reports, func(i, j int) bool { return reports[i].Path < reports[j].Path })
 
-	failed := false
-	fmt.Println("=== fips-invariant-check ===")
+	if *strict {
+		fmt.Println("=== fips-invariant-check (strict: no exemptions) ===")
+	} else {
+		fmt.Println("=== fips-invariant-check ===")
+	}
 
 	// Rule 1: one OpenSSL core.
 	present := map[string][]string{} // major -> system core files present
