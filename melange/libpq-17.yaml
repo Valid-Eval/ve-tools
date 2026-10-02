@@ -1,0 +1,104 @@
+# PostgreSQL client library (libpq) built from source against the image's own FIPS OpenSSL core.
+#
+# Why this exists: Wolfi's libpq-17 moved to OpenSSL 4 (17.11-r4) while CPython's _ssl/_hashlib use
+# OpenSSL 3. Two OpenSSL cores in one process cannot both initialise the single Chainguard FIPS
+# provider (fips.so), so every Python service failed to connect ("could not generate nonce").
+# Building libpq here pins it to the same core as the interpreter. The fleet invariant check
+# (fips-invariant-check) fails the image build if the two ever diverge again.
+#
+# Lives in ve-tools so every image that needs libpq builds the SAME recipe (image-python,
+# image-ruby): each image-* CI checks out ve-tools at a pinned tag (`melange-libpq-17/vN`), runs
+# melange/build.sh into its own Docker build context, and installs the apks. No artifact is
+# published; each build signs with a throwaway per-run key.
+#
+# Built with melange so the result is a real, signed apk: scanners (Trivy/Grype) see its name and
+# version like any other package, and apk refuses to co-install it with Wolfi's libpq-17 (same
+# /usr/lib/libpq.so.5), so a stray `apk add libpq-17` fails loudly instead of shadowing it.
+#
+# GSSAPI/LDAP/zlib/ICU/readline are disabled: nothing in the fleet authenticates to Postgres via
+# Kerberos or LDAP (verified 2026-10-02), and dropping them removes the krb5/ldap/sasl closure.
+#
+# renovate: postgres/postgres -- tag, commit and package version move together; keep these
+# three lines adjacent and in this order (Renovate's replace template rewrites them as a block).
+vars:
+  pg-tag: REL_17_11
+  pg-commit: 083ac033419f690758508e08c1736089384bbee8
+package:
+  version: "17.11"
+  name: ve-libpq-17
+  epoch: 0
+  description: "PostgreSQL 17 client library (libpq) built against the image's FIPS OpenSSL 3 core"
+  copyright:
+    - license: PostgreSQL
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - build-base
+      - busybox
+      - ca-certificates-bundle
+      # OpenSSL line for the build env. It must match the consuming images' runtimes (CPython _ssl,
+      # Ruby openssl.so: OpenSSL 3.6, libssl.so.3) at BOTH levels:
+      #  - MAJOR (.so.3 vs .so.4): a mismatch is two OpenSSL cores in one process, and
+      #    fips-invariant-check's linkage scan fails the image.
+      #  - MINOR (3.6 vs 3.7): same .so.3 soname, so the linkage scan PASSES; the libpq would
+      #    reference newer versioned symbols (OPENSSL_3.7.0) and fail only when loaded or resolved.
+      #    Only the images' behavioural probes catch this, because they actually exercise libpq.
+      #    The package name below pins the minor, so this bites only if someone edits that line.
+      # Not pinned to a PATCH version, unlike the image-side header install: melange builds in a
+      # throwaway Wolfi env, so nothing here can upgrade a base image's packages, and OpenSSL adds
+      # no symbols in patch releases.
+      # Expect this line to break soon: OpenSSL 3.6 reaches end of support on 2026-11-01, and when
+      # Wolfi drops openssl-3.6-dev, melange fails to resolve it (loud, not silent). Move it in
+      # step with whatever OpenSSL line the base images' runtimes move to.
+      - openssl-3.6-dev
+      - perl
+      - bison
+      - flex
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/postgres/postgres
+      tag: ${{vars.pg-tag}}
+      expected-commit: ${{vars.pg-commit}}
+
+  - runs: |
+      ./configure \
+        --prefix=/usr \
+        --with-openssl \
+        --without-icu \
+        --without-readline \
+        --without-zlib \
+        --without-gssapi \
+        --without-ldap
+
+  - runs: |
+      make -C src/interfaces/libpq -j$(nproc)
+      make -C src/interfaces/libpq install DESTDIR="${{targets.destdir}}"
+      make -C src/include install DESTDIR="${{targets.destdir}}"
+      make -C src/bin/pg_config install DESTDIR="${{targets.destdir}}"
+      # Client library only: drop the server catalog files src/include's install brings along.
+      rm -rf "${{targets.destdir}}"/usr/share/postgresql/postgres.bki "${{targets.destdir}}"/usr/share/postgresql/system_constraints.sql
+      # Static archive is not shipped: consumers link the shared library.
+      rm -f "${{targets.destdir}}"/usr/lib/libpq.a "${{targets.destdir}}"/usr/lib/libpgport*.a "${{targets.destdir}}"/usr/lib/libpgcommon*.a
+
+  - uses: strip
+
+subpackages:
+  - name: ve-libpq-17-dev
+    description: "Headers, pg_config and the unversioned libpq.so link for building against ve-libpq-17"
+    pipeline:
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}"/usr/lib "${{targets.subpkgdir}}"/usr/bin
+          mv "${{targets.destdir}}"/usr/include "${{targets.subpkgdir}}"/usr/
+          mv "${{targets.destdir}}"/usr/bin/pg_config "${{targets.subpkgdir}}"/usr/bin/
+          mv "${{targets.destdir}}"/usr/lib/libpq.so "${{targets.subpkgdir}}"/usr/lib/
+          mv "${{targets.destdir}}"/usr/lib/pkgconfig "${{targets.subpkgdir}}"/usr/lib/ 2>/dev/null || true
+    dependencies:
+      runtime:
+        - ve-libpq-17
