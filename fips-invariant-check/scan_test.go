@@ -25,6 +25,12 @@ func TestEmbeddedReason(t *testing.T) {
 		{"pg gem bundled libpq", fileReport{Path: "/app/vendor/pg-1.6.3-x86_64-linux/ports/x86_64-linux/lib/libpq-ruby-pg.so.1", Defines: []string{"RAND_bytes"}, Markers: []string{"OpenSSL 3.6.0"}}, "defines its own RAND_bytes"},
 		{"cryptography wheel", fileReport{Path: "/usr/lib/python3.14/site-packages/cryptography/hazmat/bindings/_rust.abi3.so", Defines: []string{"EVP_DigestInit_ex"}}, "defines its own"},
 		{"stripped chrome with BoringSSL sources", fileReport{Path: "/usr/lib/chromium/chrome", Markers: []string{"BoringSSL"}, HasSource: true}, "compiled-in crypto library"},
+		// Boundaries of the stripped-copy branch: source paths in a file that links the system
+		// core are its headers/asserts, not a second copy; a Go binary is judged by the Go rule.
+		{"source paths but links the system core", fileReport{Path: "/usr/lib/ruby/openssl.so", NeededCores: []string{"libcrypto.so.3"}, Markers: []string{"OpenSSL 3.6.4"}, HasSource: true}, ""},
+		{"Go binary with source paths is judged by the Go rule", fileReport{Path: "/usr/bin/svc", IsGo: true, GoFIPS: true, GoCrypto: true, Markers: []string{"BoringSSL"}, HasSource: true}, ""},
+		{"independent stack by soname, even in a system dir", fileReport{Path: "/usr/lib/libwolfssl.so.42", Soname: "libwolfssl.so.42"}, "wolfSSL"},
+		{"Mbed TLS crypto soname", fileReport{Path: "/usr/lib/libmbedcrypto.so.16", Soname: "libmbedcrypto.so.16"}, "Mbed TLS"},
 		{"vendored libcrypto in a wheel", fileReport{Path: "/opt/appenv/lib/foo.libs/libcrypto-1a2b3c4d.so.3", Soname: "libcrypto-1a2b3c4d.so.3"}, "vendored OpenSSL"},
 		{"libcrypto outside system dirs", fileReport{Path: "/opt/app/lib/libcrypto.so.3", Soname: "libcrypto.so.3"}, "vendored OpenSSL"},
 		{"NSS", fileReport{Path: "/usr/lib/libssl3.so", Soname: "libssl3.so"}, "Mozilla NSS"},
