@@ -36,6 +36,25 @@ var nssSonames = map[string]bool{
 	"libfreeblpriv3.so": true, "libsoftokn3.so": true, "libnssckbi.so": true,
 }
 
+// otherCryptoLibs are independent crypto implementations, recognised by soname. They name their
+// entry points differently (Heimdal's hcrypto exports hc_RAND_bytes / hc_EVP_DigestInit_ex), so
+// the exact-name symbol check cannot see them. A generic "any prefix" match would false-positive
+// on CPython's _ssl, which defines a local _ssl_RAND_bytes wrapper around the system OpenSSL.
+var otherCryptoLibs = []struct {
+	soname *regexp.Regexp
+	name   string
+}{
+	{regexp.MustCompile(`^libhcrypto\.so(\.|$)`), "Heimdal hcrypto"},
+	{regexp.MustCompile(`^libgcrypt\.so(\.|$)`), "libgcrypt"},
+	{regexp.MustCompile(`^lib(nettle|hogweed)\.so(\.|$)`), "Nettle"},
+	{regexp.MustCompile(`^libgnutls\.so(\.|$)`), "GnuTLS"},
+	{regexp.MustCompile(`^libmbed(crypto|tls|x509)\.so(\.|$)`), "Mbed TLS"},
+	{regexp.MustCompile(`^libwolfssl\.so(\.|$)`), "wolfSSL"},
+}
+
+// heimdalSymbols catch a Heimdal hcrypto copy that is not shipped under its own soname.
+var heimdalSymbols = map[string]bool{"hc_RAND_bytes": true, "hc_EVP_DigestInit_ex": true}
+
 // goCryptoMarker: function names a Go binary carries (in its pclntab, which stripping does not
 // remove) when it does TLS or symmetric/hash crypto through the standard library.
 var goCryptoMarker = regexp.MustCompile(`crypto/tls\.\(\*Conn\)\.Handshake|crypto/aes\.NewCipher|crypto/sha256\.Sum256`)
@@ -106,7 +125,7 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 			continue // stripped: no .symtab; the marker scan below covers this case
 		}
 		for _, s := range syms {
-			if cryptoSymbols[s.Name] && s.Section != elf.SHN_UNDEF && !seen[s.Name] {
+			if (cryptoSymbols[s.Name] || heimdalSymbols[s.Name]) && s.Section != elf.SHN_UNDEF && !seen[s.Name] {
 				seen[s.Name] = true
 				r.Defines = append(r.Defines, s.Name)
 			}
@@ -209,6 +228,11 @@ func systemCoreMajor(r *fileReport) (string, bool) {
 func embeddedReason(r *fileReport) string {
 	if _, ok := systemCoreMajor(r); ok || inDir(r.Path, providerDirs) {
 		return ""
+	}
+	for _, l := range otherCryptoLibs {
+		if l.soname.MatchString(r.Soname) {
+			return l.name + " crypto library (" + r.Soname + "), a separate crypto stack outside a validated FIPS module"
+		}
 	}
 	if nssSonames[r.Soname] {
 		return "Mozilla NSS crypto library (" + r.Soname + "), a separate crypto stack outside the FIPS provider"
