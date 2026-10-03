@@ -56,11 +56,18 @@ Structural checks cannot prove behaviour, so an image can also register a **beha
 
 ```dockerfile
 # In the image's gobuilder stage (credbridge pattern):
-RUN CGO_ENABLED=0 go install github.com/Valid-Eval/ve-tools/fips-invariant-check@v0.1.0
-# ...and as the LAST step of every image build, base or downstream:
-COPY --from=gobuilder /usr/bin/fips-invariant-check /usr/local/bin/fips-invariant-check
-RUN ["/usr/local/bin/fips-invariant-check"]
+RUN CGO_ENABLED=0 GOBIN=/usr/bin go install github.com/Valid-Eval/ve-tools/fips-invariant-check@v0.1.0
+# ...and as the LAST step of every image build, base or downstream. Run it as root, then
+# restore the image's own user (65532 on the fleet's runtime bases):
+USER 0
+RUN --mount=type=bind,from=gobuilder,source=/usr/bin/fips-invariant-check,target=/usr/local/bin/fips-invariant-check \
+    ["/usr/local/bin/fips-invariant-check"]
+USER 65532
 ```
+
+- **Run it as root.** A `RUN` executes as the image's current `USER`. As a non-root user the scan cannot open root-only paths, and because it fails closed, it then fails. On the fleet's Chainguard runtime bases (`USER 65532`) that is 9 paths: `/etc/shadow`, `/root`, `/usr/man`, `/var/adm`, `/var/lib/ftp`, `/var/lib/news`, `/var/mail`, `/var/spool/lpd` and `/var/spool/uucppublic`.
+- **Bind-mount it, don't `COPY` it.** The mount keeps the checker out of the published image. A `COPY` would leave `/usr/local/bin/fips-invariant-check` in every production image.
+- The exec form works in distroless images, which have no shell.
 
 To scan an extracted rootfs instead, run `fips-invariant-check -root /path/to/rootfs`. The behavioural probe is skipped in that mode.
 
