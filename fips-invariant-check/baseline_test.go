@@ -45,7 +45,7 @@ func TestProviderIdentityReadsCompiledStrings(t *testing.T) {
 	if err != nil || !slices.Equal(names, []string{"Chainguard FIPS Provider for OpenSSL"}) || !slices.Equal(builds, []string{"3.4.0-r5"}) {
 		t.Fatalf("names %v builds %v err %v", names, builds, err)
 	}
-	if !isProviderModule("/usr/lib/ossl-modules/fips.so") || isProviderModule("/opt/x/fips.so") || isProviderModule("/usr/lib/ossl-modules/legacy.so") {
+	if !isProviderModule("/usr/lib/ossl-modules/fips.so") || isProviderModule("/usr/lib/ossl-modules/legacy.so") {
 		t.Fatal("isProviderModule must accept only fips.so in a provider dir")
 	}
 }
@@ -81,5 +81,71 @@ func TestEvaluateFleetBaseline(t *testing.T) {
 	}
 	if failed, _ := evalOut(t, evalInput{reports: []*fileReport{ssl4}}); failed {
 		t.Fatal("without a baseline (nil) rule 1 stays self-consistency only")
+	}
+}
+
+func TestParseBaselineRejectsAmbiguity(t *testing.T) {
+	ok := "FIPS_OPENSSL_MAJOR=3\nFIPS_PROVIDER_NAME=n\nFIPS_PROVIDER_BUILDINFO=b\nFIPS_PROVIDER_CMVP=1\n"
+	for name, s := range map[string]string{
+		"unknown key":   ok + "FIPS_OTHER=1\n",
+		"duplicate key": ok + "FIPS_OPENSSL_MAJOR=4\n",
+		"non-numeric":   strings.Replace(ok, "=3", "=3 # three", 1),
+	} {
+		if _, err := parseBaseline(s); err == nil {
+			t.Errorf("%s must be an error", name)
+		}
+	}
+}
+
+// Review findings: unlinked other-major cores, providers outside the usual dirs, name mismatch,
+// and rule 3 triggered by a present core or a lone fips.so.
+func TestEvaluateBaselineHardening(t *testing.T) {
+	b := testBaseline()
+	sys3 := &fileReport{Path: "/usr/lib/libcrypto.so.3", Soname: "libcrypto.so.3"}
+	sys4 := &fileReport{Path: "/usr/lib/libcrypto.so.4", Soname: "libcrypto.so.4"}
+	ssl3 := &fileReport{Path: "/usr/lib/python3.14/lib-dynload/_ssl.so", NeededCores: []string{"libcrypto.so.3"}}
+	good := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{b.ProviderBuildinfo}}
+
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, sys4, ssl3, good}, baseline: b}); !failed || !strings.Contains(out, "/usr/lib/libcrypto.so.4 is OpenSSL core .so.4, not the fleet baseline's .so.3") {
+		t.Fatalf("an unlinked core of another major must fail:\n%s", out)
+	}
+	allow := []*allowEntry{{pattern: "/usr/lib/libcrypto.so.4", reason: "builder only", source: "t:1"}}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, sys4, ssl3, good}, baseline: b, allow: allow}); failed || !strings.Contains(out, "ALLOWED /usr/lib/libcrypto.so.4") {
+		t.Fatalf("a non-strict image may exempt it by path:\n%s", out)
+	}
+	if failed, _ := evalOut(t, evalInput{reports: []*fileReport{sys3, sys4, ssl3, good}, baseline: b, allow: allow, strict: true}); !failed {
+		t.Fatal("strict must ignore that exemption")
+	}
+	multi := &fileReport{Path: "/usr/lib/x86_64-linux-gnu/ossl-modules/fips.so", ProviderNames: good.ProviderNames, ProviderBuilds: good.ProviderBuilds}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, good, multi}, baseline: b}); !failed || !strings.Contains(out, "more than one FIPS provider module") {
+		t.Fatalf("a second fips.so anywhere must count:\n%s", out)
+	}
+	wrongName := &fileReport{Path: good.Path, ProviderNames: []string{"Other FIPS Provider for OpenSSL"}, ProviderBuilds: good.ProviderBuilds}
+	if failed, _ := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, wrongName}, baseline: b}); !failed {
+		t.Fatal("a provider name other than the baseline's must fail")
+	}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3}, baseline: b}); !failed || !strings.Contains(out, "no FIPS provider module") {
+		t.Fatalf("a present but unlinked core still needs the provider:\n%s", out)
+	}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{wrongName}, baseline: b}); !failed || !strings.Contains(out, "reports name") {
+		t.Fatalf("a lone fips.so with no OpenSSL is still checked:\n%s", out)
+	}
+}
+
+func TestRunBaselineFlag(t *testing.T) {
+	var out, errOut strings.Builder
+	env := func(string) string { return "" }
+	if code := run([]string{"-strict", "-baseline", "/nonexistent", "-root", t.TempDir()}, env, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "cannot be used with -strict") {
+		t.Fatalf("strict must refuse -baseline: code %d, %s", code, errOut.String())
+	}
+	errOut.Reset()
+	if code := run([]string{"-baseline", "/nonexistent", "-root", t.TempDir()}, env, &out, &errOut); code != 2 {
+		t.Fatalf("an unreadable -baseline must be fatal: code %d, %s", code, errOut.String())
+	}
+	bad := filepath.Join(t.TempDir(), "b.env")
+	os.WriteFile(bad, []byte("FIPS_OPENSSL_MAJOR=3\n"), 0o644)
+	errOut.Reset()
+	if code := run([]string{"-baseline", bad, "-root", t.TempDir()}, env, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "missing") {
+		t.Fatalf("an incomplete -baseline must be fatal: code %d, %s", code, errOut.String())
 	}
 }

@@ -107,6 +107,11 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	allowPaths = append(allowPaths, allowFiles...)
 
 	baselineText := embeddedBaseline
+	if *baselineFile != "" && *strict {
+		// A production image is held to the fleet baseline compiled into the checker; letting it
+		// name its own would let one image drift while staying strict-green.
+		return fatal("-baseline cannot be used with -strict: production images are checked against the compiled-in fleet baseline")
+	}
 	if *baselineFile != "" {
 		b, err := os.ReadFile(*baselineFile)
 		if err != nil {
@@ -380,17 +385,35 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 		failed = true
 		fmt.Fprintf(out, "FAIL  the linked OpenSSL core libcrypto.so.%s is not the fleet baseline's libcrypto.so.%s (baseline.env FIPS_OPENSSL_MAJOR)\n", versions[0], in.baseline.OpenSSLMajor)
 	}
-
-	// Rule 3: one FIPS provider, and it is the baseline's. Checked whenever the image carries a
-	// system OpenSSL; this is the Security Policy's Crypto Officer check (module name and build
-	// info) made automatic.
-	if in.baseline != nil && (len(present) > 0 || len(versions) > 0) {
-		var modules []*fileReport
-		for _, r := range in.reports {
-			if isProviderModule(r.Path) {
-				modules = append(modules, r)
+	// A core of another major that nothing links yet still fails: the next package or dlopen that
+	// links it makes a second core in the process (the 2026-10-02 outage). Only a non-strict
+	// (builder) image may exempt the file by path.
+	if in.baseline != nil {
+		for _, m := range slices.Sorted(maps.Keys(present)) {
+			if m == in.baseline.OpenSSLMajor {
+				continue
+			}
+			for _, p := range present[m] {
+				if e := matchAllow(allow, p); e != nil {
+					fmt.Fprintf(out, "      ALLOWED %s is OpenSSL core .so.%s, not the fleet baseline's .so.%s\n        exemption (%s): %s\n", p, m, in.baseline.OpenSSLMajor, e.source, e.reason)
+					continue
+				}
+				failed = true
+				fmt.Fprintf(out, "FAIL  %s is OpenSSL core .so.%s, not the fleet baseline's .so.%s; remove it from the image\n", p, m, in.baseline.OpenSSLMajor)
 			}
 		}
+	}
+
+	// Rule 3: one FIPS provider, and it is the baseline's. Checked whenever the image carries a
+	// system OpenSSL or any fips.so; this is the Security Policy's Crypto Officer check (module
+	// name and build info) made automatic.
+	var modules []*fileReport
+	for _, r := range in.reports {
+		if isProviderModule(r.Path) {
+			modules = append(modules, r)
+		}
+	}
+	if in.baseline != nil && (len(present) > 0 || len(versions) > 0 || len(modules) > 0) {
 		want := fmt.Sprintf("%q build %s (CMVP #%s)", in.baseline.ProviderName, in.baseline.ProviderBuildinfo, in.baseline.CMVP)
 		switch {
 		case len(modules) == 0:
