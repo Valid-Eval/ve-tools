@@ -96,9 +96,9 @@ func (e *allowEntry) matches(p string) bool {
 	return ok
 }
 
-// findAllow returns the first entry matching p. Every matching entry is marked used, so an
+// matchAllow returns the first entry matching p. Every matching entry is marked used, so an
 // overlapping entry later in the list is not misreported as stale.
-func findAllow(entries []*allowEntry, p string) *allowEntry {
+func matchAllow(entries []*allowEntry, p string) *allowEntry {
 	var first *allowEntry
 	for _, e := range entries {
 		if e.matches(p) {

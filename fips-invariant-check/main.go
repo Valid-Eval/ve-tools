@@ -307,7 +307,7 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	linkers := map[string][]string{} // soname version -> files that link it
 	var coreAllowed []string
 	for _, r := range in.reports {
-		if major, ok := systemCoreMajor(r); ok {
+		if major, ok := systemCoreVersion(r); ok {
 			present[major] = append(present[major], r.Path)
 			continue
 		}
@@ -318,7 +318,7 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 		// (stricter than the per-process hazard), so a build tool that runs as its own process and
 		// never loads the application's libraries (e.g. a toolchain linking another core) is
 		// exempted by name, with its reason printed.
-		if e := findAllow(allow, r.Path); e != nil {
+		if e := matchAllow(allow, r.Path); e != nil {
 			coreAllowed = append(coreAllowed, fmt.Sprintf("ALLOWED %s links %s\n        exemption (%s): %s", r.Path, strings.Join(r.NeededCores, ", "), e.source, e.reason))
 			continue
 		}
@@ -369,7 +369,7 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 			}
 			continue
 		}
-		if e := findAllow(allow, r.Path); e != nil {
+		if e := matchAllow(allow, r.Path); e != nil {
 			allowed = append(allowed, fmt.Sprintf("ALLOWED %s: %s\n        exemption (%s): %s", r.Path, reason, e.source, e.reason))
 			continue
 		}

@@ -126,10 +126,10 @@ func TestGoFIPSMode(t *testing.T) {
 }
 
 func TestSystemCoreMajor(t *testing.T) {
-	if m, ok := systemCoreMajor(&fileReport{Path: "/usr/lib/libcrypto.so.4", Soname: "libcrypto.so.4"}); !ok || m != "4" {
+	if m, ok := systemCoreVersion(&fileReport{Path: "/usr/lib/libcrypto.so.4", Soname: "libcrypto.so.4"}); !ok || m != "4" {
 		t.Fatalf("got %q %v", m, ok)
 	}
-	if _, ok := systemCoreMajor(&fileReport{Path: "/opt/x/libcrypto.so.3", Soname: "libcrypto.so.3"}); ok {
+	if _, ok := systemCoreVersion(&fileReport{Path: "/opt/x/libcrypto.so.3", Soname: "libcrypto.so.3"}); ok {
 		t.Fatal("a libcrypto outside the system dirs is not the system core")
 	}
 }
@@ -158,16 +158,16 @@ func TestAllowFile(t *testing.T) {
 	if len(entries) != 2 || entries[0].reason != "dev-only credential helper; builder never ships" {
 		t.Fatalf("parsed %+v", entries)
 	}
-	if findAllow(entries, "/usr/bin/credbridge") == nil {
+	if matchAllow(entries, "/usr/bin/credbridge") == nil {
 		t.Error("exact path should match")
 	}
-	if findAllow(entries, "/usr/lib/python3.14/site-packages/cryptography/x.so") == nil {
+	if matchAllow(entries, "/usr/lib/python3.14/site-packages/cryptography/x.so") == nil {
 		t.Error("/** should match anything below")
 	}
-	if findAllow(entries, "/usr/lib/python3.14/site-packages-other/x.so") != nil {
+	if matchAllow(entries, "/usr/lib/python3.14/site-packages-other/x.so") != nil {
 		t.Error("/** must not match a sibling with the same prefix")
 	}
-	if findAllow(entries, "/usr/bin/credbridge2") != nil {
+	if matchAllow(entries, "/usr/bin/credbridge2") != nil {
 		t.Error("exact path must not prefix-match")
 	}
 
@@ -181,10 +181,10 @@ func TestAllowFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if findAllow(globDir, "/usr/lib/python3.14/site-packages/x/y.so") == nil {
+	if matchAllow(globDir, "/usr/lib/python3.14/site-packages/x/y.so") == nil {
 		t.Error("a glob in the directory part of a /** pattern should match")
 	}
-	if findAllow(globDir, "/usr/lib/python3.14/other/y.so") != nil {
+	if matchAllow(globDir, "/usr/lib/python3.14/other/y.so") != nil {
 		t.Error("a /** pattern must not match outside its directory")
 	}
 }

@@ -76,8 +76,10 @@ func TestAnalyzeGoDebugInfoFile(t *testing.T) {
 		t.Skipf("objcopy cannot handle a linux/amd64 ELF here: %v %s", err, out)
 	}
 	r, err := analyze(dbg, "/usr/lib/debug/svc.debug")
-	if err != nil {
-		t.Fatalf("a Go debug-info file must analyze cleanly, got %v", err)
+	// Its first segment keeps file bytes, so it is not NoCode; its Go sections are NOBITS, so it is
+	// not judged as Go.
+	if err != nil || r == nil || r.IsGo {
+		t.Fatalf("a Go debug-info file must analyze cleanly and not as Go, got %v %+v", err, r)
 	}
 	if r != nil && embeddedReason(r) != "" {
 		t.Fatalf("a Go debug-info file must not fail, got %q", embeddedReason(r))
@@ -397,11 +399,19 @@ func retypeSection(t *testing.T, d []byte, from elf.SectionType, edit func(hdr [
 }
 
 // A .dynamic whose section header is mislabelled still has its libraries read from PT_DYNAMIC, as
-// the loader does; it must not read as statically linked.
+// the loader does; it must not read as statically linked. Section flags are not trusted to say
+// "debug info" either: with SHF_EXECINSTR cleared everywhere it must still be read.
 func TestAnalyzeMislabelledDynamicSection(t *testing.T) {
 	src := runnerLibssl(t)
 	patched := copyWith(t, src, func(d []byte) []byte {
-		return retypeSection(t, d, elf.SHT_DYNAMIC, func(h []byte) { binary.LittleEndian.PutUint32(h[4:], uint32(elf.SHT_PROGBITS)) })
+		d = retypeSection(t, d, elf.SHT_DYNAMIC, func(h []byte) { binary.LittleEndian.PutUint32(h[4:], uint32(elf.SHT_PROGBITS)) })
+		shoff := binary.LittleEndian.Uint64(d[0x28:])
+		shnum := binary.LittleEndian.Uint16(d[0x3c:])
+		for i := uint64(0); i < uint64(shnum); i++ {
+			flags := d[shoff+i*64+8:]
+			binary.LittleEndian.PutUint64(flags, binary.LittleEndian.Uint64(flags)&^uint64(elf.SHF_EXECINSTR))
+		}
+		return d
 	})
 	r, err := analyze(patched, "/usr/lib/libssl.so.3")
 	if err != nil || r == nil || !slices.Contains(r.NeededCores, "libcrypto.so.3") {
@@ -417,5 +427,170 @@ func TestAnalyzeBrokenDynamicSymbolTableIsAnError(t *testing.T) {
 	})
 	if _, err := analyze(patched, "/usr/lib/libssl.so.3"); err == nil || !strings.Contains(err.Error(), "symbol table") {
 		t.Fatalf("a broken .dynsym must be an error, got %v", err)
+	}
+}
+
+// The separate debug file of a library that defines RAND_bytes keeps the symbol (pointing at a
+// NOBITS .text) but no loadable code; it must not fail as "defines its own RAND_bytes". The
+// library itself must.
+func TestAnalyzeDebugFileOfCryptoLibraryPasses(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs gcc and objcopy")
+	}
+	gcc, err1 := exec.LookPath("gcc")
+	objcopy, err2 := exec.LookPath("objcopy")
+	if err1 != nil || err2 != nil {
+		t.Skip("gcc/objcopy not available")
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "c.c"), []byte("int RAND_bytes(unsigned char*b,int n){for(int i=0;i<n;i++)b[i]=i;return 1;}\n"), 0o644)
+	lib := filepath.Join(dir, "libfoo.so.1")
+	if out, err := exec.Command(gcc, "-shared", "-fPIC", "-g", "-o", lib, filepath.Join(dir, "c.c")).CombinedOutput(); err != nil {
+		t.Skipf("gcc: %v %s", err, out)
+	}
+	dbg := filepath.Join(dir, "libfoo.debug")
+	if out, err := exec.Command(objcopy, "--only-keep-debug", lib, dbg).CombinedOutput(); err != nil {
+		t.Fatalf("objcopy: %v %s", err, out)
+	}
+	if r, err := analyze(lib, "/opt/x/libfoo.so.1"); err != nil || embeddedReason(r) == "" {
+		t.Fatalf("control: the library itself must fail, got %v %+v", err, r)
+	}
+	r, err := analyze(dbg, "/usr/lib/debug/.build-id/ab/cdef.debug")
+	if err != nil || r == nil || !r.NoCode || embeddedReason(r) != "" {
+		t.Fatalf("its debug file must carry no code and pass, got %v %+v", err, r)
+	}
+}
+
+// A runnable library whose section headers say "no code" (SHF_EXECINSTR cleared, .text retyped
+// NOBITS) still has a loadable executable segment; it must be judged.
+func TestAnalyzeForgedSectionsStillJudged(t *testing.T) {
+	src := runnerLibssl(t)
+	patched := copyWith(t, src, func(d []byte) []byte {
+		return retypeSection(t, d, elf.SHT_PROGBITS, func(h []byte) {}) // asserts the layout
+	})
+	d, _ := os.ReadFile(patched)
+	shoff := binary.LittleEndian.Uint64(d[0x28:])
+	shnum := binary.LittleEndian.Uint16(d[0x3c:])
+	for i := uint64(0); i < uint64(shnum); i++ {
+		h := d[shoff+i*64:]
+		if binary.LittleEndian.Uint64(h[8:])&uint64(elf.SHF_EXECINSTR) != 0 {
+			binary.LittleEndian.PutUint32(h[4:], uint32(elf.SHT_NOBITS))
+			binary.LittleEndian.PutUint64(h[8:], binary.LittleEndian.Uint64(h[8:])&^uint64(elf.SHF_EXECINSTR))
+		}
+	}
+	os.WriteFile(patched, d, 0o644)
+	r, err := analyze(patched, "/usr/lib/libssl.so.3")
+	if err != nil || r == nil || r.NoCode || !slices.Contains(r.NeededCores, "libcrypto.so.3") {
+		t.Fatalf("forged section headers must not make a runnable library 'no code', got %v %+v", err, r)
+	}
+}
+
+// An ELF the scanning user cannot read (a root-owned 0700 binary, with the check running as the
+// image's USER) is uninspectable and fails the run; it is never skipped.
+func TestRunUnreadableFileFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read everything")
+	}
+	root := fixtureRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "usr/bin/tool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(root, "usr/bin/locked")
+	os.WriteFile(locked, data, 0o755)
+	os.Chmod(locked, 0o000)
+	t.Cleanup(func() { os.Chmod(locked, 0o644) })
+	if code, out := runWith(t, nil, "-root", root); code != 1 || !strings.Contains(out, "/usr/bin/locked") {
+		t.Fatalf("an unreadable file must fail the run and be named, got %d:\n%s", code, out)
+	}
+}
+
+func TestParseProbeTimeoutValues(t *testing.T) {
+	for in, want := range map[string]time.Duration{"30s": 30 * time.Second, " 2m ": 2 * time.Minute} {
+		if d, err := parseProbeTimeout(in); err != nil || d != want {
+			t.Errorf("parseProbeTimeout(%q) = %v %v, want %v", in, d, err, want)
+		}
+	}
+	for _, in := range []string{"0s", "-1m"} {
+		if _, err := parseProbeTimeout(in); err == nil {
+			t.Errorf("parseProbeTimeout(%q) must be an error", in)
+		}
+	}
+}
+
+// Only *.allow files in allow.d are exemptions: a parked x.allow.disabled must not apply.
+func TestRunAllowDirIgnoresNonAllowFiles(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "usr/bin"), 0o755)
+	data, _ := os.ReadFile(goFixture(t, "tponly"))
+	os.WriteFile(filepath.Join(root, "usr/bin/app"), data, 0o755)
+	dir := filepath.Join(root, "etc/fips-invariant-check/allow.d")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "x.allow.disabled"), []byte("/usr/bin/app parked-exemption\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "README"), []byte("not an allowlist\n"), 0o644)
+	if code, out := runWith(t, nil, "-root", root); code != 1 || strings.Contains(out, "parked-exemption") {
+		t.Fatalf("a non-.allow file must be ignored, got %d:\n%s", code, out)
+	}
+}
+
+// The reject-everything side of the gate: ordinary non-ELF files (scripts, text named like a
+// library) are not uninspectable, and a clean image with them passes.
+func TestRunNonELFFilesPass(t *testing.T) {
+	root := fixtureRoot(t)
+	script := "#!/bin/sh\n" + strings.Repeat("echo hello world from a perfectly ordinary script\n", 10)
+	os.WriteFile(filepath.Join(root, "usr/bin/run.sh"), []byte(script), 0o755)
+	os.MkdirAll(filepath.Join(root, "usr/lib"), 0o755)
+	os.WriteFile(filepath.Join(root, "usr/lib/libfake.so"), []byte(strings.Repeat("INPUT(-lc)\n", 20)), 0o644)
+	if code, out := runWith(t, nil, "-root", root); code != 0 || strings.Contains(out, "could not be inspected") {
+		t.Fatalf("non-ELF files must not fail a clean image, got %d:\n%s", code, out)
+	}
+}
+
+// UPX also leaves its own section names (UPX0/UPX1) when section headers are kept.
+func TestAnalyzeUPXWithSections(t *testing.T) {
+	withCrypto, _ := goFixtures(t)
+	packed := copyWith(t, withCrypto, func(d []byte) []byte {
+		copy(d[0x800:], "UPX!")
+		return renameSection(t, d, ".text", "UPX0.")
+	})
+	if _, err := analyze(packed, "/usr/bin/svc"); err == nil || !strings.Contains(err.Error(), "packed") {
+		t.Fatalf("a UPX-packed executable with UPX sections must be uninspectable, got %v", err)
+	}
+}
+
+// With section headers stripped, a DT_STRTAB that points outside every loadable segment makes the
+// file uninspectable; it must not read as "links nothing".
+func TestAnalyzeStrtabOutsideSegments(t *testing.T) {
+	src := runnerLibssl(t)
+	bad := copyWith(t, src, func(d []byte) []byte {
+		f, err := elf.NewFile(bytes.NewReader(d))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Class != elf.ELFCLASS64 || f.ByteOrder != binary.LittleEndian {
+			t.Skip("needs a 64-bit little-endian ELF")
+		}
+		found := false
+		for _, p := range f.Progs {
+			if p.Type != elf.PT_DYNAMIC {
+				continue
+			}
+			for o := p.Off; o+16 <= p.Off+p.Filesz; o += 16 {
+				if elf.DynTag(binary.LittleEndian.Uint64(d[o:])) == elf.DT_STRTAB {
+					binary.LittleEndian.PutUint64(d[o+8:], 0x7fff_0000_0000)
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatal("no DT_STRTAB")
+		}
+		binary.LittleEndian.PutUint64(d[0x28:], 0) // e_shoff
+		binary.LittleEndian.PutUint16(d[0x3c:], 0) // e_shnum
+		binary.LittleEndian.PutUint16(d[0x3e:], 0) // e_shstrndx
+		return d
+	})
+	if _, err := analyze(bad, "/usr/lib/libssl.so.3"); err == nil || !strings.Contains(err.Error(), "string table") {
+		t.Fatalf("an unlocatable dynamic string table must be an error, got %v", err)
 	}
 }

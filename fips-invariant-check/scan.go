@@ -113,17 +113,18 @@ var xcryptoNoCrypto = map[string]bool{
 	"acme/autocert": true, "ocsp": true, "ssh/terminal": true,
 }
 
+// wrapperSpec: from which x/crypto version a package only forwards, and the functions that may.
+type wrapperSpec struct {
+	since string          // first x/crypto version in which these functions only forward
+	funcs map[string]bool // the forwarding functions (package-relative names)
+}
+
 // xcryptoWrappers are x/crypto packages that only forward to the standard library from a given
 // x/crypto version on, with the functions each may then contain. Before that version they carry
 // their own implementation, often in the very same exported function (pbkdf2.Key ran its own
 // HMAC loop until v0.51.0), so the exemption needs both the version and the function name. Any
 // other function in the package, such as the legacy-Keccak sha3.(*state) methods, is its own
 // implementation. hkdf is absent on purpose: it still runs its own Expand on crypto/hmac.
-type wrapperSpec struct {
-	since string          // first x/crypto version in which these functions only forward
-	funcs map[string]bool // the forwarding functions (package-relative names)
-}
-
 var xcryptoWrappers = map[string]wrapperSpec{
 	"sha3": {since: "v0.44.0", funcs: set("New224", "New256", "New384", "New512", "Sum224", "Sum256", "Sum384", "Sum512",
 		"NewShake128", "NewShake256", "NewCShake128", "NewCShake256", "ShakeSum128", "ShakeSum256",
@@ -267,6 +268,7 @@ type fileReport struct {
 	GoCrypto      bool     // Go binary with any crypto compiled in (standard library, x/crypto, or GoUnvalidated)
 	GoUnvalidated []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
 	GoBuildNote   string   // the settings that decided GoFIPS, for the report
+	NoCode        bool     // no executable byte is loadable from this file (separate debug info); not judged
 }
 
 // scan walks root and analyzes every ELF file. Anything it cannot inspect is returned in
@@ -358,6 +360,14 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	}
 
 	r := &fileReport{Path: imagePath}
+	if noLoadableCode(f) {
+		// Separate debug info (objcopy --only-keep-debug, -dbgsym/.debug packages): it keeps the
+		// symbol table and DWARF, but the loader would map no executable byte from it, so nothing
+		// here can run. Judging its symbols would fail every image that installs debug symbols
+		// for the system libcrypto.
+		r.NoCode = true
+		return r, nil
+	}
 	needed, soname, err := dynamicInfo(f, fh)
 	if err != nil {
 		return nil, err
@@ -410,15 +420,22 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	return r, nil
 }
 
-// debugInfoOnly: a separate debug-info file, recognised positively: it has section headers but no
-// code in the file (every executable section is NOBITS, as objcopy --only-keep-debug leaves them).
-func debugInfoOnly(f *elf.File) bool {
-	if len(f.Sections) == 0 {
-		return false
+// noLoadableCode: the file has loadable segments, but every executable one (PF_X) has no bytes in
+// the file. Decided from the program headers the loader uses, not from section headers or flags,
+// which a file can carry falsely. Relocatable objects (no PT_LOAD) are not covered: their code is
+// in sections and is judged.
+func noLoadableCode(f *elf.File) bool {
+	loads := 0
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_LOAD {
+			continue
+		}
+		loads++
+		if p.Flags&elf.PF_X != 0 && p.Filesz > 0 {
+			return false
+		}
 	}
-	return !slices.ContainsFunc(f.Sections, func(s *elf.Section) bool {
-		return s.Flags&elf.SHF_EXECINSTR != 0 && inFile(s)
-	})
+	return loads > 0
 }
 
 func inFile(s *elf.Section) bool { return s != nil && s.Type != elf.SHT_NOBITS }
@@ -428,9 +445,9 @@ func hasSectionPrefix(f *elf.File, prefix string) bool {
 }
 
 // dynamicInfo returns the DT_NEEDED entries and DT_SONAME. debug/elf finds the dynamic table only
-// through section headers; the loader uses the program headers (PT_DYNAMIC). A binary stripped of
-// ALL its section headers would otherwise hide every library it links, so it falls back to
-// PT_DYNAMIC, but only then.
+// through section headers; the loader uses the program headers (PT_DYNAMIC). Whenever there is
+// no in-file dynamic section, it falls back to PT_DYNAMIC, so headers that are stripped, missing
+// or mislabelled cannot hide the libraries a file links.
 func dynamicInfo(f *elf.File, r io.ReaderAt) ([]string, string, error) {
 	if f.SectionByType(elf.SHT_DYNAMIC) != nil {
 		needed, err := f.ImportedLibraries()
@@ -446,11 +463,6 @@ func dynamicInfo(f *elf.File, r io.ReaderAt) ([]string, string, error) {
 			soname = so[0]
 		}
 		return needed, soname, nil
-	}
-	if debugInfoOnly(f) {
-		// A separate debug-info file (.debug/.debuginfo): its program headers describe data that
-		// is not in this file, so there is nothing to read.
-		return nil, "", nil
 	}
 	// No in-file dynamic section, but the loader ignores sections and uses PT_DYNAMIC: a file
 	// stripped with --strip-section-headers, or one whose .dynamic header is missing or
@@ -471,6 +483,12 @@ func dynamicFromProgs(f *elf.File, r io.ReaderAt) ([]string, string, error) {
 	}
 	if dyn == nil {
 		return nil, "", nil // statically linked
+	}
+	if dyn.Filesz == 0 {
+		// The table is not in this file: a separate debug-info file (objcopy --only-keep-debug
+		// keeps the program headers but zeroes their file sizes). Decided from the program header
+		// the loader uses, not from section flags, which a file can carry falsely.
+		return nil, "", nil
 	}
 	if dyn.Filesz > maxDynamic {
 		return nil, "", fmt.Errorf("PT_DYNAMIC of %d bytes is implausible", dyn.Filesz)
@@ -622,22 +640,22 @@ var validatedGoFIPS140 = regexp.MustCompile(`^v1\.0\.[0-9]+-`)
 // runtime GODEBUG=fips140=off would switch FIPS mode off in a route (A) binary; neither is
 // visible to a build-time scan.
 func goFIPSMode(bi *buildinfo.BuildInfo) (bool, string) {
-	set := map[string]string{}
+	settings := map[string]string{}
 	var notes []string
 	for _, s := range bi.Settings {
-		set[s.Key] = s.Value
+		settings[s.Key] = s.Value
 		switch s.Key {
 		case "GOFIPS140", "DefaultGODEBUG", "-tags", "GOEXPERIMENT", "CGO_ENABLED",
 			"chainguard_cryptographic_module", "chainguard_entropy_source":
 			notes = append(notes, s.Key+"="+s.Value)
 		}
 	}
-	has := func(key, item string) bool { return slices.Contains(strings.Split(set[key], ","), item) }
-	native := validatedGoFIPS140.MatchString(set["GOFIPS140"]) &&
+	has := func(key, item string) bool { return slices.Contains(strings.Split(settings[key], ","), item) }
+	native := validatedGoFIPS140.MatchString(settings["GOFIPS140"]) &&
 		(has("DefaultGODEBUG", "fips140=on") || has("DefaultGODEBUG", "fips140=only")) &&
-		set["chainguard_cryptographic_module"] == "geomys" &&
-		set["chainguard_entropy_source"] == "geomys"
-	viaOpenSSL := has("-tags", "requirefips") && has("GOEXPERIMENT", "systemcrypto") && set["CGO_ENABLED"] == "1"
+		settings["chainguard_cryptographic_module"] == "geomys" &&
+		settings["chainguard_entropy_source"] == "geomys"
+	viaOpenSSL := has("-tags", "requirefips") && has("GOEXPERIMENT", "systemcrypto") && settings["CGO_ENABLED"] == "1"
 	return native || viaOpenSSL, strings.Join(notes, " ")
 }
 
@@ -645,9 +663,9 @@ func inDir(p string, dirs []string) bool {
 	return slices.ContainsFunc(dirs, func(d string) bool { return strings.HasPrefix(p, d+"/") })
 }
 
-// systemCoreMajor returns the core's soname version ("3", "4", or OpenSSL 1.x's dotted "1.1") if
+// systemCoreVersion returns the core's soname version ("3", "4", or OpenSSL 1.x's dotted "1.1") if
 // r IS a system libcrypto/libssl. That version is the core's identity.
-func systemCoreMajor(r *fileReport) (string, bool) {
+func systemCoreVersion(r *fileReport) (string, bool) {
 	m := coreSoname.FindStringSubmatch(r.Soname)
 	if m == nil || !systemLibDirs[path.Dir(r.Path)] {
 		return "", false
@@ -657,7 +675,7 @@ func systemCoreMajor(r *fileReport) (string, bool) {
 
 // embeddedReason explains why r does crypto outside a validated FIPS module, or returns "".
 func embeddedReason(r *fileReport) string {
-	if _, ok := systemCoreMajor(r); ok || inDir(r.Path, providerDirs) {
+	if _, ok := systemCoreVersion(r); ok || inDir(r.Path, providerDirs) {
 		return ""
 	}
 	for _, l := range otherCryptoLibs {
@@ -677,7 +695,7 @@ func embeddedReason(r *fileReport) string {
 	if r.IsGo && r.GoFIPS && len(r.GoUnvalidated) > 0 {
 		return "Go binary built on a validated module but also running crypto code from outside the standard library (" + strings.Join(r.GoUnvalidated, ", ") + "); FIPS mode does not govern it"
 	}
-	if r.IsGo && r.GoCrypto && !r.GoFIPS {
+	if r.IsGo && (r.GoCrypto || len(r.GoUnvalidated) > 0) && !r.GoFIPS {
 		return "Go binary whose crypto is not a validated FIPS module: needs the Chainguard native Go module build (certified GOFIPS140 snapshot + fips140=on + chainguard geomys module/entropy; CMVP #5247) or the system-OpenSSL route (requirefips + systemcrypto + CGO); has " + r.GoBuildNote
 	}
 	return ""
