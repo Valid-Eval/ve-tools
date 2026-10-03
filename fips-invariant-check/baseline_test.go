@@ -149,3 +149,25 @@ func TestRunBaselineFlag(t *testing.T) {
 		t.Fatalf("an incomplete -baseline must be fatal: code %d, %s", code, errOut.String())
 	}
 }
+
+func TestOtherProviderModulesAndAdjacentStrings(t *testing.T) {
+	b := testBaseline()
+	sys3 := &fileReport{Path: "/usr/lib/libcrypto.so.3", Soname: "libcrypto.so.3"}
+	good := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{b.ProviderBuildinfo}}
+	legacy := &fileReport{Path: "/usr/lib/ossl-modules/legacy.so"}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, good, legacy}, baseline: b}); !failed || !strings.Contains(out, "legacy.so is a loadable OpenSSL module other than the FIPS provider") {
+		t.Fatalf("legacy.so must fail:\n%s", out)
+	}
+	allow := []*allowEntry{{pattern: "/usr/lib/ossl-modules/legacy.so", reason: "builder only", source: "t:1"}}
+	if failed, _ := evalOut(t, evalInput{reports: []*fileReport{sys3, good, legacy}, baseline: b, allow: allow}); failed {
+		t.Fatal("a non-strict image may exempt it")
+	}
+	if !isProviderModule("/usr/lib/x86_64-linux-gnu/ossl-modules/fips.so") || !inDir("/usr/lib/aarch64-linux-gnu/ossl-modules/fips.so", providerDirs) {
+		t.Fatal("multiarch provider dirs must count")
+	}
+	p := filepath.Join(t.TempDir(), "fips.so")
+	os.WriteFile(p, []byte("\x003.4.0-r5\x003.4.0-r4\x00Chainguard FIPS Provider for OpenSSL\x00"), 0o644)
+	if _, builds, _ := providerIdentity(p); !slices.Equal(builds, []string{"3.4.0-r4", "3.4.0-r5"}) {
+		t.Fatalf("adjacent build strings must both be read, got %v", builds)
+	}
+}

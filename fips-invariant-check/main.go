@@ -413,6 +413,22 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 			modules = append(modules, r)
 		}
 	}
+	// Any other module beside it (legacy.so, an engine, a second provider under another name)
+	// is crypto outside the validated module that the core can load on request; rule 2 skips the
+	// provider dirs, so it is judged here. Only a non-strict (builder) image may exempt it.
+	if in.baseline != nil {
+		for _, r := range in.reports {
+			if isProviderModule(r.Path) || !inDir(r.Path, providerDirs) {
+				continue
+			}
+			if e := matchAllow(allow, r.Path); e != nil {
+				fmt.Fprintf(out, "      ALLOWED %s is a loadable OpenSSL module other than the FIPS provider\n        exemption (%s): %s\n", r.Path, e.source, e.reason)
+				continue
+			}
+			failed = true
+			fmt.Fprintf(out, "FAIL  %s is a loadable OpenSSL module other than the FIPS provider (crypto outside the validated module); remove it from the image\n", r.Path)
+		}
+	}
 	if in.baseline != nil && (len(present) > 0 || len(versions) > 0 || len(modules) > 0) {
 		want := fmt.Sprintf("%q build %s (CMVP #%s)", in.baseline.ProviderName, in.baseline.ProviderBuildinfo, in.baseline.CMVP)
 		switch {

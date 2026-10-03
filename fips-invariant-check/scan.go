@@ -305,7 +305,8 @@ var systemLibDirs = map[string]bool{
 
 // providerDirs hold OpenSSL provider modules (fips.so, legacy.so) and OpenSSL 3 engines. They
 // define crypto by design and are loaded by the system core.
-var providerDirs = []string{"/usr/lib/ossl-modules", "/usr/lib64/ossl-modules", "/usr/lib/engines-3"}
+var providerDirs = []string{"/usr/lib/ossl-modules", "/usr/lib64/ossl-modules", "/usr/lib/engines-3",
+	"/usr/lib/x86_64-linux-gnu/ossl-modules", "/usr/lib/aarch64-linux-gnu/ossl-modules"}
 
 // skipDirs are virtual filesystems, never image content. /run is not one of them: it is not a
 // mount during docker build, and what an image puts there ships with it.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
 	"os"
@@ -59,8 +60,8 @@ func parseBaseline(s string) (*baseline, error) {
 // Provider identity as compiled into fips.so: the name and build-info C strings that
 // OSSL_PROV_PARAM_NAME and OSSL_PROV_PARAM_BUILDINFO return.
 var (
-	providerNameString  = regexp.MustCompile(`\x00([A-Za-z][A-Za-z0-9 .-]*FIPS Provider for OpenSSL)\x00`)
-	providerBuildString = regexp.MustCompile(`\x00([0-9]+\.[0-9]+\.[0-9]+-r[0-9]+)\x00`)
+	providerNameString  = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9 .-]*FIPS Provider for OpenSSL$`)
+	providerBuildString = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$`)
 )
 
 func providerIdentity(realPath string) (names, builds []string, err error) {
@@ -68,11 +69,14 @@ func providerIdentity(realPath string) (names, builds []string, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, m := range providerNameString.FindAllSubmatch(data, -1) {
-		names = append(names, string(m[1]))
-	}
-	for _, m := range providerBuildString.FindAllSubmatch(data, -1) {
-		builds = append(builds, string(m[1]))
+	// Each NUL-delimited piece is judged on its own, so adjacent strings cannot share a delimiter.
+	for _, s := range bytes.Split(data, []byte{0}) {
+		switch {
+		case providerNameString.Match(s):
+			names = append(names, string(s))
+		case providerBuildString.Match(s):
+			builds = append(builds, string(s))
+		}
 	}
 	slices.Sort(names)
 	slices.Sort(builds)
