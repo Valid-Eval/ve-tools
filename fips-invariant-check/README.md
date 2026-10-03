@@ -4,7 +4,7 @@ Enforces the VE fleet's FIPS crypto invariant on a container image, from inside 
 
 ## The invariant
 
-1. **One OpenSSL core.** Everything that links OpenSSL links the same major (`libcrypto.so.N`).
+1. **One OpenSSL core.** Everything that links OpenSSL links the same soname version (`libcrypto.so.N`).
    - Two cores in one process cannot both initialise the single Chainguard FIPS provider (`fips.so`), and whichever loads second fails.
    - On 2026-10-02 this broke every Python service: libpq-17 `17.11-r4` moved to OpenSSL 4 while CPython uses OpenSSL 3, and libpq failed with `could not generate nonce`.
 2. **No unvalidated crypto.** No binary carries its own crypto library. Those never touch the FIPS provider and do not fail; they silently run non-validated crypto. Seen in the fleet:
@@ -23,7 +23,13 @@ Enforces the VE fleet's FIPS crypto invariant on a container image, from inside 
    - a UPX-packed executable;
    - a Go binary whose build info or function table cannot be read. Go is recognised by its sections or build-info magic, not only by `debug/buildinfo`, which reports damaged build info as "not a Go executable".
 
-   Only `/proc`, `/sys` and `/dev` are skipped, as virtual filesystems. `/run` is scanned: it is not a mount during `docker build`, and what an image puts there ships with it. A separate debug-info file (`objcopy --only-keep-debug`, `-dbgsym`/`.debug` packages) holds no runnable code, and its own symbols are not judged. That is decided from its program headers alone: no executable segment has file bytes beyond the ELF and program headers, the stack is declared non-executable, and the dynamic table has no file bytes. Section headers never make a file "debug info". Its linked libraries still count for rule 1, and the run notes how many such files it skipped judging. A missing `-root`, or one with nothing to inspect (no ELF file and no uninspectable path), is an error (exit 2). Linked libraries are read from the program headers (`PT_DYNAMIC`, as the loader does) whenever there is no in-file dynamic section: section headers stripped, or `.dynamic` missing or mislabelled. A separate debug-info file, whose `PT_DYNAMIC` has no bytes in the file, has nothing to read. Files of any size are scanned in bounded chunks.
+   Only `/proc`, `/sys` and `/dev` are skipped, as virtual filesystems. `/run` is scanned: it is not a mount during `docker build`, and what an image puts there ships with it. A separate debug-info file (`objcopy --only-keep-debug`, `-dbgsym`/`.debug` packages) holds no runnable code, and its own symbols are not judged. That is decided from its program headers alone: no executable segment has file bytes beyond the ELF and program headers and the notes right after them (with the entry point outside those bytes), the stack is declared non-executable, and the dynamic table has no file bytes. Section headers never make a file "debug info". Its linked libraries still count for rule 1, and the run notes how many such files it skipped judging. A missing `-root`, or one with nothing to inspect (no ELF file and no uninspectable path), is an error (exit 2). Linked libraries are read from the program headers (`PT_DYNAMIC`, as the loader does) whenever there is no in-file dynamic section: section headers stripped, or `.dynamic` missing or mislabelled. Files of any size are scanned in bounded chunks.
+
+## What it protects against
+
+The check catches **accidental** non-FIPS crypto: an upstream package, gem, wheel or Go module that bundles its own crypto library, or links a second OpenSSL. These arrive unannounced through ordinary dependency updates. It reads ELF files the way the loader does and fails closed on anything it cannot inspect.
+
+It is **not** a defence against a deliberately forged binary. An ELF whose section headers or build-info bytes were edited to mislead a scanner can still run normally. The checks make the cheap forgeries fail (a mislabelled `.dynamic`, false section flags, an unrecognisable Go function table), and the review history on the PR that introduced this tool lists the ones that were closed. But someone who can place a crafted binary in an image build already controls that image, so this is out of scope. Supply-chain provenance (pinned digests, signed packages) is the control for that.
 
 ## How it decides
 

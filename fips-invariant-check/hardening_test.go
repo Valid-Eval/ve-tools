@@ -6,6 +6,7 @@ import (
 	"debug/elf"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -458,8 +459,8 @@ func TestAnalyzeDebugFileOfCryptoLibraryPasses(t *testing.T) {
 	gcc, objcopy := gccAndObjcopy(t)
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "c.c"), []byte("int RAND_bytes(unsigned char*b,int n){for(int i=0;i<n;i++)b[i]=i;return 1;}\n"), 0o644)
-	for _, layout := range []string{"-Wl,-z,separate-code", "-Wl,-z,noseparate-code"} {
-		lib := filepath.Join(dir, "libfoo"+layout[8:]+".so.1")
+	for i, layout := range []string{"-Wl,-z,separate-code", "-Wl,-z,noseparate-code"} {
+		lib := filepath.Join(dir, fmt.Sprintf("libfoo%d.so.1", i))
 		build(t, gcc, "-shared", "-fPIC", "-g", layout, "-o", lib, filepath.Join(dir, "c.c"))
 		dbg := lib + ".debug"
 		build(t, objcopy, "--only-keep-debug", lib, dbg)
@@ -715,5 +716,120 @@ func TestAnalyzeUnreadableDynamicSectionIsAnError(t *testing.T) {
 	})
 	if _, err := analyze(bad, "/usr/lib/libssl.so.3"); err == nil {
 		t.Fatal("an unreadable .dynamic must make the file uninspectable")
+	}
+}
+
+// A .gopclntab read from the wrong place (here its section header points at the ELF header) parses
+// as an empty table without error; it must make the file uninspectable, not "no crypto".
+func TestAnalyzeUnrecognisedGoFunctionTable(t *testing.T) {
+	withCrypto, _ := goFixtures(t)
+	forged := copyWith(t, withCrypto, func(d []byte) []byte {
+		f, err := elf.NewFile(bytes.NewReader(d))
+		if err != nil {
+			t.Fatal(err)
+		}
+		shoff := binary.LittleEndian.Uint64(d[0x28:])
+		for i, sec := range f.Sections {
+			if sec.Name == ".gopclntab" {
+				binary.LittleEndian.PutUint64(d[shoff+uint64(i)*64+24:], 0) // sh_offset
+				return d
+			}
+		}
+		t.Fatal("fixture has no .gopclntab")
+		return nil
+	})
+	if _, err := analyze(forged, "/usr/bin/svc"); err == nil || !strings.Contains(err.Error(), "unrecognised") {
+		t.Fatalf("an unrecognisable Go function table must be an error, got %v", err)
+	}
+}
+
+func TestBuildInfoErr(t *testing.T) {
+	notGo := errors.New("not a Go executable")
+	if err := buildInfoErr(false, notGo); err != nil {
+		t.Errorf("no Go evidence + 'not a Go executable' is not Go, got %v", err)
+	}
+	if err := buildInfoErr(true, notGo); err == nil {
+		t.Error("Go evidence with unreadable build info must be an error")
+	}
+	if err := buildInfoErr(false, errors.New("read /x: input/output error")); err == nil {
+		t.Error("any other build-info error must be an error")
+	}
+}
+
+func TestEvaluateNotesNoCodeFiles(t *testing.T) {
+	r := &fileReport{Path: "/usr/lib/debug/.build-id/ab/cdef.debug", NoCode: true}
+	failed, out := evalOut(t, evalInput{reports: []*fileReport{r}})
+	if failed || !strings.Contains(out, "hold no runnable code") || !strings.Contains(out, r.Path) {
+		t.Fatalf("a NoCode file must be noted by path and not fail, got failed=%v:\n%s", failed, out)
+	}
+}
+
+func TestRunMalformedAllowFileIsUsageError(t *testing.T) {
+	root := fixtureRoot(t)
+	dir := filepath.Join(root, "etc/fips-invariant-check/allow.d")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "bad.allow"), []byte("/usr/bin/tool\n"), 0o644) // no reason
+	if code, out := runWith(t, nil, "-root", root); code != 2 || !strings.Contains(out, "bad.allow:1") {
+		t.Fatalf("a malformed allow file must be exit 2 naming the line, got %d:\n%s", code, out)
+	}
+}
+
+// Provider and engine directories are exempt by exact directory, not by name prefix.
+func TestProviderDirBoundary(t *testing.T) {
+	ok := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", Defines: []string{"RAND_bytes"}}
+	if r := embeddedReason(ok); r != "" {
+		t.Errorf("the provider dir is exempt, got %q", r)
+	}
+	for _, p := range []string{"/usr/lib/ossl-modules-vendor/evil.so", "/usr/lib/engines-3x/evil.so"} {
+		if embeddedReason(&fileReport{Path: p, Defines: []string{"RAND_bytes"}}) == "" {
+			t.Errorf("%s is not a provider dir and must fail", p)
+		}
+	}
+}
+
+// The 32-bit paths: a hand-built ELFCLASS32 file with only program headers and a PT_DYNAMIC that
+// needs libcrypto.so.3.
+func TestDynamicFromProgs32Bit(t *testing.T) {
+	const ehsize, phsize = 52, 32
+	strtab := "\x00libcrypto.so.3\x00"
+	dynOff := uint32(ehsize + 2*phsize)
+	dyn := []uint32{uint32(elf.DT_NEEDED), 1, uint32(elf.DT_STRTAB), dynOff + 32, uint32(elf.DT_STRSZ), uint32(len(strtab)), uint32(elf.DT_NULL), 0}
+	size := dynOff + 32 + uint32(len(strtab))
+	b := make([]byte, size)
+	copy(b, "\x7fELF")
+	b[4], b[5], b[6] = byte(elf.ELFCLASS32), byte(elf.ELFDATA2LSB), 1
+	le := binary.LittleEndian
+	le.PutUint16(b[16:], uint16(elf.ET_DYN))
+	le.PutUint16(b[18:], uint16(elf.EM_386))
+	le.PutUint32(b[20:], 1)
+	le.PutUint32(b[28:], ehsize) // e_phoff
+	le.PutUint16(b[40:], ehsize)
+	le.PutUint16(b[42:], phsize)
+	le.PutUint16(b[44:], 2)
+	ph := func(i int, typ elf.ProgType, off, filesz uint32, flags elf.ProgFlag) {
+		p := b[ehsize+i*phsize:]
+		le.PutUint32(p[0:], uint32(typ))
+		le.PutUint32(p[4:], off)
+		le.PutUint32(p[8:], off) // vaddr == offset
+		le.PutUint32(p[16:], filesz)
+		le.PutUint32(p[20:], filesz)
+		le.PutUint32(p[24:], uint32(flags))
+	}
+	ph(0, elf.PT_LOAD, 0, size, elf.PF_R)
+	ph(1, elf.PT_DYNAMIC, dynOff, 32, elf.PF_R)
+	for i, v := range dyn {
+		le.PutUint32(b[dynOff+uint32(i)*4:], v)
+	}
+	copy(b[dynOff+32:], strtab)
+	f, err := elf.NewFile(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if end := headerEnd(f, b); end != ehsize+2*phsize {
+		t.Errorf("headerEnd = %d, want %d", end, ehsize+2*phsize)
+	}
+	needed, _, err := dynamicFromProgs(f, bytes.NewReader(b))
+	if err != nil || !slices.Equal(needed, []string{"libcrypto.so.3"}) {
+		t.Fatalf("want DT_NEEDED [libcrypto.so.3], got %v %v", needed, err)
 	}
 }

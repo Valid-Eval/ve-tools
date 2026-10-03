@@ -334,14 +334,14 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	case len(versions) > 1:
 		failed = true
 		names := make([]string, len(versions))
-		for i, m := range versions {
-			names[i] = "libcrypto.so." + m
+		for i, v := range versions {
+			names[i] = "libcrypto.so." + v
 		}
 		fmt.Fprintf(out, "FAIL  more than one OpenSSL core is linked: %s\n", strings.Join(names, ", "))
 		fmt.Fprintln(out, "      Two cores in one process cannot both initialise the FIPS provider; whichever loads second fails.")
-		for _, m := range versions {
-			fmt.Fprintf(out, "      linked against .so.%s (%d files):\n", m, len(linkers[m]))
-			for _, p := range head(linkers[m], 15) {
+		for _, v := range versions {
+			fmt.Fprintf(out, "      linked against .so.%s (%d files):\n", v, len(linkers[v]))
+			for _, p := range head(linkers[v], 15) {
 				fmt.Fprintf(out, "        %s\n", p)
 			}
 		}

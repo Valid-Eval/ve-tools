@@ -84,6 +84,12 @@ func goCrypto(f *elf.File, xcVersion string) (uses bool, unvalidated []string, e
 	if err != nil {
 		return false, nil, fmt.Errorf("parsing .gopclntab: %v", err)
 	}
+	// gosym does not reject a table it cannot recognise (one read from the wrong place, say via a
+	// forged section header): it returns no functions, which would read as "no crypto". Every Go
+	// program links runtime.main, so its absence means the table was not really read.
+	if tab.LookupFunc("runtime.main") == nil {
+		return false, nil, fmt.Errorf("Go function table (.gopclntab) unrecognised: %d functions, no runtime.main", len(tab.Funcs))
+	}
 	pkgs := map[string]bool{}
 	for _, fn := range tab.Funcs {
 		if isCryptoFunc(fn.Name) {
@@ -405,19 +411,31 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	// (objcopy --only-keep-debug) they are SHT_NOBITS and there is no code to judge.
 	goLike := inFile(f.Section(".gopclntab")) || inFile(f.Section(".go.buildinfo")) || facts.goMagic
 	bi, biErr := buildinfo.Read(fh)
-	switch {
-	case biErr == nil:
-		r.IsGo = true
-		r.GoFIPS, r.GoBuildNote = goFIPSMode(bi)
-		if r.GoCrypto, r.GoUnvalidated, err = goCrypto(f, xcryptoVersion(bi)); err != nil {
+	if biErr != nil {
+		if err := buildInfoErr(goLike, biErr); err != nil {
 			return nil, err
 		}
-	case goLike:
-		return nil, fmt.Errorf("Go binary whose build info cannot be read: %v", biErr)
-	case !strings.Contains(biErr.Error(), "not a Go executable"):
-		return nil, fmt.Errorf("Go build info unreadable: %v", biErr)
+		return r, nil // not Go
+	}
+	r.IsGo = true
+	r.GoFIPS, r.GoBuildNote = goFIPSMode(bi)
+	if r.GoCrypto, r.GoUnvalidated, err = goCrypto(f, xcryptoVersion(bi)); err != nil {
+		return nil, err
 	}
 	return r, nil
+}
+
+// buildInfoErr decides what a build-info read failure means. Only debug/buildinfo's "not a Go
+// executable", on a file with no other Go evidence, means "not Go"; anything else (damaged build
+// info in a Go-looking file, an I/O error) makes the file uninspectable.
+func buildInfoErr(goLike bool, biErr error) error {
+	switch {
+	case goLike:
+		return fmt.Errorf("Go binary whose build info cannot be read: %v", biErr)
+	case !strings.Contains(biErr.Error(), "not a Go executable"):
+		return fmt.Errorf("Go build info unreadable: %v", biErr)
+	}
+	return nil
 }
 
 // noLoadableCode: nothing in the file can run, decided from the program headers the loader uses
