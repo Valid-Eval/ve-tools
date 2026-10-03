@@ -38,7 +38,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -446,16 +445,15 @@ func parseProbeTimeout(v string) (time.Duration, error) {
 }
 
 // runProbe runs the image's behavioural probe. Failure to start, a non-zero exit, or running past
-// the timeout all fail: a hung probe must not hang the image build. The probe runs in its own
-// process group and the whole group is killed at the deadline, so a child it started (a shell
+// the timeout all fail: a hung probe must not hang the image build. On Unix the probe runs in its
+// own process group and the whole group is killed at the deadline, so a child it started (a shell
 // probe's subprocess) cannot keep the output pipe open; WaitDelay bounds the wait regardless.
 func runProbe(probe []string, out io.Writer, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, probe[0], probe[1:]...)
 	cmd.Stdout, cmd.Stderr = out, out
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	killProcessGroupOnCancel(cmd)
 	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {

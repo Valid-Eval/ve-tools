@@ -30,6 +30,8 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::run gofmt -w"; exit 1; }
       - run: go vet ./...
+      - name: Vets for other hosts (scanning an extracted rootfs off Linux is supported)
+        run: for os in windows darwin; do GOOS=$os go vet ./... || exit 1; done
       - run: go test -count=1 ./...
       - name: Builds as the static binary the images install
         run: CGO_ENABLED=0 go build -trimpath -o /tmp/fips-invariant-check . && file /tmp/fips-invariant-check | grep -q 'statically linked'
