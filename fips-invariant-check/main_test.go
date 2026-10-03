@@ -158,9 +158,9 @@ func TestRunStrictAndAllowFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "b.allow"), []byte("/usr/bin/tool builder-only\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The test binary may or may not link std crypto (testing's fuzz support uses sha256); either
-	// way, non-strict mode reads the allow file: the binary is ALLOWED, or the entry is unused.
-	if code, out := runWith(t, nil, "-root", root); code != 0 || !(strings.Contains(out, "ALLOWED /usr/bin/tool") || strings.Contains(out, "matched nothing")) {
+	// /usr/bin/tool is the crypto-free Go fixture, so the entry is unused. Non-strict mode reading
+	// the allow file shows up as that "matched nothing" warning.
+	if code, out := runWith(t, nil, "-root", root); code != 0 || !strings.Contains(out, "matched nothing") {
 		t.Fatalf("non-strict: the allow file must be read and applied, got %d:\n%s", code, out)
 	}
 	code, out := runWith(t, map[string]string{"FIPS_INVARIANT_STRICT": "true"}, "-root", root)
