@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -66,7 +67,7 @@ var otherCryptoLibs = []struct {
 // and neither fips140=on nor fips140=only governs them. Only module-path symbols count. The
 // standard library vendors x/crypto (vendor/golang.org/x/crypto/chacha20poly1305 backs crypto/tls's
 // ChaCha20 suites), so every Go TLS binary carries vendor/ copies; FIPS mode refuses those suites.
-func goCrypto(f *elf.File) (uses bool, unvalidated []string, err error) {
+func goCrypto(f *elf.File, xcVersion string) (uses bool, unvalidated []string, err error) {
 	pcln := f.Section(".gopclntab")
 	if pcln == nil {
 		pcln = f.Section(".data.rel.ro.gopclntab") // some PIE layouts
@@ -88,7 +89,7 @@ func goCrypto(f *elf.File) (uses bool, unvalidated []string, err error) {
 		if isCryptoFunc(fn.Name) {
 			uses = true
 		}
-		if p, ok := xcryptoPrimitive(fn.Name); ok {
+		if p, ok := xcryptoPrimitive(fn.Name, xcVersion); ok {
 			pkgs[p] = true
 		}
 	}
@@ -101,34 +102,125 @@ func isCryptoFunc(name string) bool {
 	return strings.HasPrefix(name, "crypto/") || strings.HasPrefix(name, "golang.org/x/crypto/")
 }
 
-// xcryptoPrimitives are the golang.org/x/crypto packages that implement cryptography themselves.
-// Packages that only wrap the standard library (sha3, ed25519, curve25519, hkdf) or do no crypto
-// (cryptobyte) are deliberately absent. ssh and openpgp carry their own cipher implementations.
-var xcryptoPrimitives = map[string]bool{
-	"argon2": true, "bcrypt": true, "blake2b": true, "blake2s": true, "blowfish": true,
-	"bn256": true, "cast5": true, "chacha20": true, "chacha20poly1305": true, "md4": true,
-	"nacl": true, "openpgp": true, "otr": true, "pbkdf2": true, "pkcs12": true, "poly1305": true,
-	"ripemd160": true, "salsa20": true, "scrypt": true, "ssh": true, "tea": true, "twofish": true,
-	"xtea": true, "xts": true,
+// xcryptoNoCrypto are golang.org/x/crypto packages that implement no cryptographic algorithm
+// (encoding, protocol plumbing over the standard library). Every other x/crypto package counts as
+// its own implementation unless xcryptoWrappers says otherwise, so a package added to x/crypto, or
+// an old version of one, fails closed.
+var xcryptoNoCrypto = map[string]bool{
+	"cryptobyte": true, "cryptobyte/asn1": true, "internal/alias": true, "acme": true,
+	"acme/autocert": true, "ocsp": true, "ssh/terminal": true,
 }
 
-// xcryptoPrimitive returns the x/crypto package of a module-path function in xcryptoPrimitives.
-// vendor/golang.org/x/crypto/... (the standard library's own copy) never matches.
-func xcryptoPrimitive(name string) (string, bool) {
+// xcryptoWrappers are x/crypto packages that only forward to the standard library from a given
+// x/crypto version on, with the functions each may then contain. Before that version they carry
+// their own implementation, often in the very same exported function (pbkdf2.Key ran its own
+// HMAC loop until v0.51.0), so the exemption needs both the version and the function name. Any
+// other function in the package, such as the legacy-Keccak sha3.(*state) methods, is its own
+// implementation. hkdf is absent on purpose: it still runs its own Expand on crypto/hmac.
+var xcryptoWrappers = map[string]struct {
+	since string
+	funcs map[string]bool
+}{
+	"sha3": {"v0.44.0", set("New224", "New256", "New384", "New512", "Sum224", "Sum256", "Sum384", "Sum512",
+		"NewShake128", "NewShake256", "NewCShake128", "NewCShake256", "ShakeSum128", "ShakeSum256",
+		"(*shakeWrapper).Read", "(*shakeWrapper).Clone", "(*shakeWrapper).Size", "(*shakeWrapper).Sum",
+		"(*shakeWrapper).Write", "(*shakeWrapper).Reset", "(*shakeWrapper).BlockSize")},
+	"pbkdf2":     {"v0.51.0", set("Key")},
+	"ed25519":    {"v0.1.0", set("GenerateKey", "NewKeyFromSeed", "Sign", "Verify")},
+	"curve25519": {"v0.8.0", set("ScalarMult", "ScalarBaseMult", "X25519", "x25519")},
+}
+
+// xcryptoVersion is the golang.org/x/crypto version the binary was built with, or "" when it is
+// unknown or replaced (a replacement is not the upstream code that version names).
+func xcryptoVersion(bi *buildinfo.BuildInfo) string {
+	for _, d := range bi.Deps {
+		if d.Path == "golang.org/x/crypto" {
+			if d.Replace != nil {
+				return ""
+			}
+			return d.Version
+		}
+	}
+	return ""
+}
+
+// versionAtLeast compares vMAJOR.MINOR.PATCH prefixes (a pseudo-version's base counts). Anything
+// unparseable is not "at least": the exemption it would grant is withheld.
+func versionAtLeast(v, min string) bool {
+	parse := func(s string) ([3]int, bool) {
+		var n [3]int
+		s, ok := strings.CutPrefix(s, "v")
+		if !ok {
+			return n, false
+		}
+		parts := strings.SplitN(s, ".", 3)
+		if len(parts) != 3 {
+			return n, false
+		}
+		parts[2], _, _ = strings.Cut(parts[2], "-")
+		for i, p := range parts {
+			x, err := strconv.Atoi(p)
+			if err != nil {
+				return n, false
+			}
+			n[i] = x
+		}
+		return n, true
+	}
+	a, ok1 := parse(v)
+	b, ok2 := parse(min)
+	return ok1 && ok2 && slices.Compare(a[:], b[:]) >= 0
+}
+
+func set(names ...string) map[string]bool {
+	m := make(map[string]bool, len(names))
+	for _, n := range names {
+		m[n] = true
+	}
+	return m
+}
+
+// goClosureSuffix: compiler-generated closures and init functions, which belong to the function
+// they are named after.
+var goClosureSuffix = regexp.MustCompile(`(\.func[0-9]+|\.gowrap[0-9]+|\.deferwrap[0-9]+)+$`)
+
+// thirdPartyGoCrypto are module paths outside golang.org/x/crypto that implement cryptography
+// themselves. Like x/crypto primitives, they run outside the validated module.
+var thirdPartyGoCrypto = []string{
+	"filippo.io/edwards25519", "filippo.io/age", "github.com/cloudflare/circl",
+	"github.com/ProtonMail/go-crypto", "lukechampine.com/blake3", "github.com/zeebo/blake3",
+	"github.com/aead/chacha20", "gitlab.com/yawning/",
+}
+
+// xcryptoPrimitive returns the package of a function that implements crypto outside the standard
+// library: an x/crypto function that is neither crypto-free nor a forwarding function at this
+// x/crypto version, or a known third-party crypto module. vendor/golang.org/x/crypto/... (the standard library's own
+// copy) never matches.
+func xcryptoPrimitive(name, xcVersion string) (string, bool) {
+	for _, m := range thirdPartyGoCrypto {
+		if strings.HasPrefix(name, m) {
+			return strings.TrimSuffix(m, "/"), true
+		}
+	}
 	rest, ok := strings.CutPrefix(name, "golang.org/x/crypto/")
 	if !ok {
 		return "", false
 	}
-	top := rest
-	if i := strings.IndexAny(rest, "/."); i >= 0 {
-		top = rest[:i]
-	}
-	if !xcryptoPrimitives[top] && !strings.HasPrefix(rest, "internal/poly1305") {
+	// x/crypto package paths contain no ".", so the first one ends the package path. (Searching
+	// for the last "/" instead would be misled by generic shape types such as [go.shape.*a/b.T].)
+	pkg, fn, ok := strings.Cut(rest, ".")
+	if !ok {
 		return "", false
 	}
-	pkg := rest
-	if i := strings.Index(rest, "."); i >= 0 {
-		pkg = rest[:i]
+	if xcryptoNoCrypto[pkg] {
+		return "", false
+	}
+	fn = goClosureSuffix.ReplaceAllString(fn, "")
+	if fn == "init" || strings.HasPrefix(fn, "init.") {
+		return "", false // package initialisation: tables, not an algorithm being run
+	}
+	if w, ok := xcryptoWrappers[pkg]; ok && w.funcs[fn] && versionAtLeast(xcVersion, w.since) {
+		return "", false
 	}
 	return "golang.org/x/crypto/" + pkg, true
 }
@@ -150,8 +242,9 @@ var systemLibDirs = map[string]bool{
 // define crypto by design and are loaded by the system core.
 var providerDirs = []string{"/usr/lib/ossl-modules", "/usr/lib64/ossl-modules", "/usr/lib/engines-3"}
 
-// skipDirs are virtual filesystems, never image content.
-var skipDirs = map[string]bool{"/proc": true, "/sys": true, "/dev": true, "/run": true}
+// skipDirs are virtual filesystems, never image content. /run is not one of them: it is not a
+// mount during docker build, and what an image puts there ships with it.
+var skipDirs = map[string]bool{"/proc": true, "/sys": true, "/dev": true}
 
 type fileReport struct {
 	Path          string   // absolute path inside the image
@@ -163,7 +256,7 @@ type fileReport struct {
 	IsGo          bool
 	GoFIPS        bool     // built on one of the two accepted routes (see goFIPSMode)
 	GoCrypto      bool     // Go binary that uses standard-library or x/crypto crypto
-	GoUnvalidated []string // x/crypto packages that implement crypto themselves (outside both modules)
+	GoUnvalidated []string // non-standard-library packages whose crypto code it links (outside both modules)
 	GoBuildNote   string   // the settings that decided GoFIPS, for the report
 }
 
@@ -270,8 +363,11 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	seen := map[string]bool{}
 	for _, get := range []func() ([]elf.Symbol, error){f.Symbols, f.DynamicSymbols} {
 		syms, err := get()
-		if err != nil {
+		if errors.Is(err, elf.ErrNoSymbols) {
 			continue // stripped: no .symtab; the byte scan's markers cover this case
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading symbol table: %v", err)
 		}
 		for _, s := range syms {
 			if cryptoSymbols[s.Name] && s.Section != elf.SHN_UNDEF {
@@ -286,13 +382,15 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	// Is it Go? Decided independently of debug/buildinfo, which reports a damaged or relocated
 	// build-info blob as "not a Go executable": that would let a crypto-using Go binary skip the
 	// Go rule. A Go section or the build-info magic makes it Go; then its build info must parse.
-	goLike := f.Section(".gopclntab") != nil || f.Section(".go.buildinfo") != nil || facts.goMagic
+	// A section counts only when its bytes are in the file: in a separate debug-info file
+	// (objcopy --only-keep-debug) they are SHT_NOBITS and there is no code to judge.
+	goLike := inFile(f.Section(".gopclntab")) || inFile(f.Section(".go.buildinfo")) || facts.goMagic
 	bi, biErr := buildinfo.Read(fh)
 	switch {
 	case biErr == nil:
 		r.IsGo = true
 		r.GoFIPS, r.GoBuildNote = goFIPSMode(bi)
-		if r.GoCrypto, r.GoUnvalidated, err = goCrypto(f); err != nil {
+		if r.GoCrypto, r.GoUnvalidated, err = goCrypto(f, xcryptoVersion(bi)); err != nil {
 			return nil, err
 		}
 	case goLike:
@@ -302,6 +400,8 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	}
 	return r, nil
 }
+
+func inFile(s *elf.Section) bool { return s != nil && s.Type != elf.SHT_NOBITS }
 
 func hasSectionPrefix(f *elf.File, prefix string) bool {
 	return slices.ContainsFunc(f.Sections, func(s *elf.Section) bool { return strings.HasPrefix(s.Name, prefix) })
@@ -338,6 +438,10 @@ func dynamicInfo(f *elf.File, r io.ReaderAt) ([]string, string, error) {
 	return dynamicFromProgs(f, r)
 }
 
+// maxDynamic bounds what is read from header-supplied sizes, so a corrupt header fails the file
+// instead of exhausting memory. Real dynamic tables and string tables are far smaller.
+const maxDynamic = 64 << 20
+
 func dynamicFromProgs(f *elf.File, r io.ReaderAt) ([]string, string, error) {
 	var dyn *elf.Prog
 	for _, p := range f.Progs {
@@ -347,6 +451,9 @@ func dynamicFromProgs(f *elf.File, r io.ReaderAt) ([]string, string, error) {
 	}
 	if dyn == nil {
 		return nil, "", nil // statically linked
+	}
+	if dyn.Filesz > maxDynamic {
+		return nil, "", fmt.Errorf("PT_DYNAMIC of %d bytes is implausible", dyn.Filesz)
 	}
 	data := make([]byte, dyn.Filesz)
 	if _, err := dyn.ReadAt(data, 0); err != nil {
@@ -384,7 +491,7 @@ loop:
 		return nil, "", nil
 	}
 	off, ok := vaddrToOffset(f, strtab)
-	if !ok || strsz == 0 || strsz > 64<<20 {
+	if !ok || strsz == 0 || strsz > maxDynamic {
 		return nil, "", errors.New("PT_DYNAMIC string table cannot be located")
 	}
 	str := make([]byte, strsz)
@@ -421,7 +528,7 @@ loop:
 
 func vaddrToOffset(f *elf.File, vaddr uint64) (uint64, bool) {
 	for _, p := range f.Progs {
-		if p.Type == elf.PT_LOAD && vaddr >= p.Vaddr && vaddr < p.Vaddr+p.Filesz {
+		if p.Type == elf.PT_LOAD && vaddr >= p.Vaddr && vaddr-p.Vaddr < p.Filesz {
 			return p.Off + (vaddr - p.Vaddr), true
 		}
 	}
@@ -518,7 +625,8 @@ func inDir(p string, dirs []string) bool {
 	return slices.ContainsFunc(dirs, func(d string) bool { return strings.HasPrefix(p, d+"/") })
 }
 
-// systemCoreMajor returns the OpenSSL major ("3", "4") if r IS a system libcrypto/libssl.
+// systemCoreMajor returns the core's soname version ("3", "4", or OpenSSL 1.x's dotted "1.1") if
+// r IS a system libcrypto/libssl. That version is the core's identity.
 func systemCoreMajor(r *fileReport) (string, bool) {
 	m := coreSoname.FindStringSubmatch(r.Soname)
 	if m == nil || !systemLibDirs[path.Dir(r.Path)] {
@@ -547,7 +655,7 @@ func embeddedReason(r *fileReport) string {
 		return "carries a compiled-in crypto library (" + strings.Join(r.Markers, ", ") + ", with its source paths) and links no system libcrypto/libssl (stripped embedded copy)"
 	}
 	if r.IsGo && r.GoFIPS && len(r.GoUnvalidated) > 0 {
-		return "Go binary built on a validated module but also linking golang.org/x/crypto code that implements crypto outside it (" + strings.Join(r.GoUnvalidated, ", ") + "); FIPS mode does not govern it"
+		return "Go binary built on a validated module but also running crypto code from outside the standard library (" + strings.Join(r.GoUnvalidated, ", ") + "); FIPS mode does not govern it"
 	}
 	if r.IsGo && r.GoCrypto && !r.GoFIPS {
 		return "Go binary whose crypto is not a validated FIPS module: needs the Chainguard native Go module build (certified GOFIPS140 snapshot + fips140=on + chainguard geomys module/entropy; CMVP #5247) or the system-OpenSSL route (requirefips + systemcrypto + CGO); has " + r.GoBuildNote

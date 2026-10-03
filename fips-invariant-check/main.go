@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -131,7 +132,7 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 
 	failed := evaluate(out, in)
 
-	if probeFailed := applyProbe(out, rootAbs, probe, probeTimeout); probeFailed {
+	if applyProbe(out, rootAbs, probe, probeTimeout) {
 		failed = true
 	}
 
@@ -203,35 +204,55 @@ func allowFilesIn(root, dir string) ([]string, error) {
 }
 
 // resolveInRoot returns the host path of in-image path p under root, following symlinks with
-// root as "/". It returns "" when p does not exist.
+// root as "/". Every component is resolved here, not by the host kernel: an absolute symlink in a
+// parent directory (/etc -> /usr/etc) must also stay inside the image. It returns "" when p does
+// not exist, and an error when p itself is a symlink that leads nowhere.
 func resolveInRoot(root, p string) (string, error) {
-	cur := path.Clean(p)
-	for hops := 0; hops < 16; hops++ {
-		host := filepath.Join(root, filepath.FromSlash(cur))
+	pending := strings.Split(strings.TrimPrefix(path.Clean(p), "/"), "/")
+	resolved := "/"
+	viaFinalLink := false // p's last component was a symlink: a missing target is dangling
+	for hops := 0; len(pending) > 0; {
+		c := pending[0]
+		pending = pending[1:]
+		switch c {
+		case "", ".":
+			continue
+		case "..":
+			resolved = path.Dir(resolved)
+			continue
+		}
+		next := path.Join(resolved, c)
+		host := filepath.Join(root, filepath.FromSlash(next))
 		st, err := os.Lstat(host)
 		if errors.Is(err, os.ErrNotExist) {
-			if hops == 0 {
-				return "", nil
+			if viaFinalLink {
+				return "", fmt.Errorf("allowlist directory %s is a dangling symlink (%s does not exist)", p, next)
 			}
-			return "", fmt.Errorf("allowlist directory %s is a dangling symlink (-> %s)", p, cur)
+			return "", nil
 		}
 		if err != nil {
 			return "", fmt.Errorf("allowlist directory %s: %v", p, err)
 		}
 		if st.Mode()&os.ModeSymlink == 0 {
-			return host, nil
+			resolved = next
+			continue
+		}
+		if hops++; hops > 40 {
+			return "", fmt.Errorf("allowlist directory %s: too many levels of symlinks", p)
 		}
 		target, err := os.Readlink(host)
 		if err != nil {
 			return "", fmt.Errorf("allowlist directory %s: %v", p, err)
 		}
-		if path.IsAbs(target) {
-			cur = path.Clean(target)
-		} else {
-			cur = path.Clean(path.Join(path.Dir(cur), target))
+		if len(pending) == 0 {
+			viaFinalLink = true
 		}
+		if path.IsAbs(target) {
+			resolved = "/"
+		}
+		pending = append(strings.Split(strings.TrimPrefix(target, "/"), "/"), pending...)
 	}
-	return "", fmt.Errorf("allowlist directory %s: too many symlinks", p)
+	return filepath.Join(root, filepath.FromSlash(resolved)), nil
 }
 
 type evalInput struct {
@@ -250,8 +271,6 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	allow := in.allow
 	if in.strict {
 		allow = nil
-	}
-	if in.strict {
 		fmt.Fprintln(out, "=== fips-invariant-check (strict: no exemptions) ===")
 		if len(in.strictAllowFiles) > 0 {
 			failed = true
@@ -270,8 +289,8 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	}
 
 	// Rule 1: one OpenSSL core.
-	present := map[string][]string{} // major -> system core files present
-	linkers := map[string][]string{} // major -> files that link it
+	present := map[string][]string{} // soname version -> system core files present
+	linkers := map[string][]string{} // soname version -> files that link it
 	var coreAllowed []string
 	for _, r := range in.reports {
 		if major, ok := systemCoreMajor(r); ok {
@@ -392,10 +411,11 @@ func applyProbe(out io.Writer, rootAbs string, probe []string, timeout time.Dura
 const defaultProbeTimeout = 10 * time.Minute
 
 func parseProbeTimeout(v string) (time.Duration, error) {
-	if strings.TrimSpace(v) == "" {
+	t := strings.TrimSpace(v)
+	if t == "" {
 		return defaultProbeTimeout, nil
 	}
-	d, err := time.ParseDuration(strings.TrimSpace(v))
+	d, err := time.ParseDuration(t)
 	if err != nil || d <= 0 {
 		return 0, fmt.Errorf("FIPS_INVARIANT_PROBE_TIMEOUT=%q is not a positive duration (e.g. 10m)", v)
 	}
@@ -403,12 +423,17 @@ func parseProbeTimeout(v string) (time.Duration, error) {
 }
 
 // runProbe runs the image's behavioural probe. Failure to start, a non-zero exit, or running past
-// the timeout all fail: a hung probe must not hang the image build.
+// the timeout all fail: a hung probe must not hang the image build. The probe runs in its own
+// process group and the whole group is killed at the deadline, so a child it started (a shell
+// probe's subprocess) cannot keep the output pipe open; WaitDelay bounds the wait regardless.
 func runProbe(probe []string, out io.Writer, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, probe[0], probe[1:]...)
 	cmd.Stdout, cmd.Stderr = out, out
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("timed out after %s", timeout)

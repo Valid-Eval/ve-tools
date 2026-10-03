@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -18,7 +19,29 @@ var (
 	fixtureErr  error
 )
 
+// xcModule is a stand-in golang.org/x/crypto (wired in with a replace directive, so no network):
+// sha3.New256 is a forwarding function the tool exempts, keccakF1600 an own implementation.
+var xcModule = map[string]string{
+	"xc/go.mod": "module golang.org/x/crypto\ngo 1.24\n",
+	"xc/sha3/sha3.go": "package sha3\nimport std \"crypto/sha3\"\n" +
+		"//go:noinline\nfunc New256(b []byte) []byte { s := std.Sum256(b); return s[:] }\n" +
+		"//go:noinline\nfunc keccakF1600(a *[25]uint64) { for i := range a { a[i] ^= uint64(i) * 0x9e3779b9 } }\n" +
+		"//go:noinline\nfunc Legacy(b []byte) uint64 { var a [25]uint64; a[0] = uint64(len(b)); keccakF1600(&a); return a[1] }\n",
+}
+
+// The required version is one at which sha3.New256 would be exempt, so only the replace directive
+// (version unknown) keeps the forwarding function reported.
+const xcGoMod = "module fixture\ngo 1.24\nrequire golang.org/x/crypto v0.57.0\nreplace golang.org/x/crypto => ./xc\n"
+
 func goFixtures(t *testing.T) (withCrypto, withoutCrypto string) {
+	t.Helper()
+	return goFixture(t, "crypto"), goFixture(t, "nocrypto")
+}
+
+// goFixture returns the path of a built fixture: crypto, nocrypto, symtab (nocrypto with its
+// symbol table kept), xwrap (std crypto plus only
+// x/crypto forwarding functions) or xown (an x/crypto function with its own implementation).
+func goFixture(t *testing.T, name string) string {
 	t.Helper()
 	fixtureOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "fic-fixtures-")
@@ -27,23 +50,40 @@ func goFixtures(t *testing.T) (withCrypto, withoutCrypto string) {
 			return
 		}
 		fixtureDir = dir
-		progs := map[string]string{
-			"crypto":   "package main\nimport (\"crypto/sha256\";\"fmt\")\nfunc main(){fmt.Println(sha256.Sum256([]byte(\"x\")))}\n",
-			"nocrypto": "package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hello\")}\n",
+		plain := "module fixture\ngo 1.24\n"
+		progs := map[string]map[string]string{
+			"crypto":   {"go.mod": plain, "main.go": "package main\nimport (\"crypto/sha256\";\"fmt\")\nfunc main(){fmt.Println(sha256.Sum256([]byte(\"x\")))}\n"},
+			"nocrypto": {"go.mod": plain, "main.go": "package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hello\")}\n"},
+			"xwrap":    {"go.mod": xcGoMod, "main.go": "package main\nimport (\"fmt\";\"golang.org/x/crypto/sha3\")\nfunc main(){fmt.Println(sha3.New256([]byte(\"x\")))}\n"},
+			"symtab":   {"go.mod": plain, "main.go": "package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hello\")}\n"},
+			"xown":     {"go.mod": xcGoMod, "main.go": "package main\nimport (\"fmt\";\"golang.org/x/crypto/sha3\")\nfunc main(){fmt.Println(sha3.Legacy([]byte(\"x\")))}\n"},
 		}
-		for name, src := range progs {
+		for name, files := range progs {
 			pd := filepath.Join(dir, "src-"+name)
-			if err := os.MkdirAll(pd, 0o755); err != nil {
-				fixtureErr = err
-				return
+			if strings.Contains(files["go.mod"], "replace") {
+				for f, c := range xcModule {
+					files[f] = c
+				}
 			}
-			os.WriteFile(filepath.Join(pd, "go.mod"), []byte("module fixture\ngo 1.24\n"), 0o644)
-			os.WriteFile(filepath.Join(pd, "main.go"), []byte(src), 0o644)
-			cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", filepath.Join(dir, name), ".")
+			for f, c := range files {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(pd, f)), 0o755); err != nil {
+					fixtureErr = err
+					return
+				}
+				if err := os.WriteFile(filepath.Join(pd, f), []byte(c), 0o644); err != nil {
+					fixtureErr = err
+					return
+				}
+			}
+			ldflags := "-ldflags=-s -w"
+			if name == "symtab" {
+				ldflags = "-ldflags=-w" // keeps .symtab
+			}
+			cmd := exec.Command("go", "build", "-trimpath", ldflags, "-o", filepath.Join(dir, name), ".")
 			cmd.Dir = pd
-			cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0", "GOFLAGS=")
+			cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0", "GOFLAGS=", "GOWORK=off")
 			if out, err := cmd.CombinedOutput(); err != nil {
-				fixtureErr = &buildErr{string(out), err}
+				fixtureErr = &buildErr{name + ": " + string(out), err}
 				return
 			}
 		}
@@ -51,7 +91,7 @@ func goFixtures(t *testing.T) (withCrypto, withoutCrypto string) {
 	if fixtureErr != nil {
 		t.Fatalf("building Go fixtures: %v", fixtureErr)
 	}
-	return filepath.Join(fixtureDir, "crypto"), filepath.Join(fixtureDir, "nocrypto")
+	return filepath.Join(fixtureDir, name)
 }
 
 type buildErr struct {

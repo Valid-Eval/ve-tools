@@ -204,21 +204,59 @@ func TestXCryptoPrimitives(t *testing.T) {
 		"golang.org/x/crypto/ssh/agent.(*client).Sign":                  "golang.org/x/crypto/ssh/agent",
 		"golang.org/x/crypto/internal/poly1305.Sum":                     "golang.org/x/crypto/internal/poly1305",
 		"golang.org/x/crypto/argon2.IDKey":                              "golang.org/x/crypto/argon2",
+		// Own implementations inside packages that are wrappers in newer x/crypto versions:
+		"golang.org/x/crypto/sha3.keccakF1600":                "golang.org/x/crypto/sha3", // < v0.44.0, and legacy Keccak today
+		"golang.org/x/crypto/sha3.(*state).padAndPermute":     "golang.org/x/crypto/sha3",
+		"golang.org/x/crypto/pbkdf2.Key.func1":                "golang.org/x/crypto/pbkdf2", // < v0.51.0 inlines its HMAC loop
+		"golang.org/x/crypto/hkdf.(*hkdfReader).Read":         "golang.org/x/crypto/hkdf",   // own Expand on crypto/hmac
+		"golang.org/x/crypto/curve25519/internal/field.feMul": "golang.org/x/crypto/curve25519/internal/field",
+		"golang.org/x/crypto/newpkg.Thing":                    "golang.org/x/crypto/newpkg", // unknown: fails closed
+		"filippo.io/edwards25519.(*Point).Add":                "filippo.io/edwards25519",
+		"github.com/cloudflare/circl/sign/ed448.Sign":         "github.com/cloudflare/circl",
+		"gitlab.com/yawning/x448.git.ScalarMult":              "gitlab.com/yawning",
 	}
 	for fn, want := range cases {
-		if got, ok := xcryptoPrimitive(fn); !ok || got != want {
+		if got, ok := xcryptoPrimitive(fn, "v0.50.0"); !ok || got != want {
 			t.Errorf("%s: want %s, got %q %v", fn, want, got, ok)
 		}
 	}
 	for _, fn := range []string{
 		"vendor/golang.org/x/crypto/chacha20poly1305.(*chacha20poly1305).Seal", // stdlib's vendored copy behind crypto/tls
-		"golang.org/x/crypto/sha3.New256",                                      // wraps crypto/sha3
-		"golang.org/x/crypto/cryptobyte.(*String).ReadASN1",                    // parsing, no crypto
+		"golang.org/x/crypto/sha3.New256",                                      // forwards to crypto/sha3 (>= v0.44.0)
+		"golang.org/x/crypto/sha3.(*shakeWrapper).Read",
+		"golang.org/x/crypto/pbkdf2.Key",              // forwards to crypto/pbkdf2 (>= v0.51.0)
+		"golang.org/x/crypto/curve25519.X25519.func1", // closure of a forwarding function
+		"golang.org/x/crypto/ed25519.Sign",
+		"golang.org/x/crypto/sha3.init",
+		"golang.org/x/crypto/cryptobyte.(*String).ReadASN1", // parsing, no crypto
+		"golang.org/x/crypto/cryptobyte.(*Builder).AddASN1[go.shape.*a/b.T]",
 		"golang.org/x/crypto/internal/alias.AnyOverlap",
 		"crypto/sha256.Sum256",
 	} {
-		if p, ok := xcryptoPrimitive(fn); ok {
-			t.Errorf("%s must not count as an x/crypto primitive (got %s)", fn, p)
+		if p, ok := xcryptoPrimitive(fn, "v0.57.0"); ok {
+			t.Errorf("%s must not count as crypto outside the standard library (got %s)", fn, p)
+		}
+	}
+	// The same forwarding names are own implementations in older versions, or when the version
+	// is unknown (replaced module).
+	for fn, v := range map[string]string{
+		"golang.org/x/crypto/pbkdf2.Key":        "v0.50.0",
+		"golang.org/x/crypto/sha3.New256":       "v0.43.0",
+		"golang.org/x/crypto/curve25519.X25519": "v0.7.0",
+		"golang.org/x/crypto/sha3.Sum256":       "",
+	} {
+		if _, ok := xcryptoPrimitive(fn, v); !ok {
+			t.Errorf("%s at x/crypto %q must count as its own implementation", fn, v)
+		}
+	}
+	for _, c := range []struct {
+		v, min string
+		want   bool
+	}{{"v0.51.0", "v0.51.0", true}, {"v0.57.0", "v0.51.0", true}, {"v0.50.9", "v0.51.0", false},
+		{"v1.0.0", "v0.51.0", true}, {"v0.51.1-0.20260101000000-abcdef123456", "v0.51.0", true},
+		{"", "v0.1.0", false}, {"(devel)", "v0.1.0", false}} {
+		if got := versionAtLeast(c.v, c.min); got != c.want {
+			t.Errorf("versionAtLeast(%q, %q) = %v", c.v, c.min, got)
 		}
 	}
 	fipsWithX := &fileReport{Path: "/usr/bin/svc", IsGo: true, GoCrypto: true, GoFIPS: true, GoUnvalidated: []string{"golang.org/x/crypto/chacha20poly1305"}}
