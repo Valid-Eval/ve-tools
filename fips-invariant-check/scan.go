@@ -68,28 +68,9 @@ var otherCryptoLibs = []struct {
 // standard library vendors x/crypto (vendor/golang.org/x/crypto/chacha20poly1305 backs crypto/tls's
 // ChaCha20 suites), so every Go TLS binary carries vendor/ copies; FIPS mode refuses those suites.
 func goCrypto(f *elf.File, xcVersion string) (uses bool, unvalidated []string, err error) {
-	pcln := f.Section(".gopclntab")
-	if pcln == nil {
-		pcln = f.Section(".data.rel.ro.gopclntab") // some PIE layouts
-	}
-	text := f.Section(".text")
-	if pcln == nil || text == nil {
-		return false, nil, errors.New("Go binary without a readable function table (.gopclntab)")
-	}
-	data, err := pcln.Data()
+	tab, err := goFuncTable(f)
 	if err != nil {
-		return false, nil, fmt.Errorf("reading .gopclntab: %v", err)
-	}
-	tab, err := gosym.NewTable(nil, gosym.NewLineTable(data, text.Addr))
-	if err != nil {
-		return false, nil, fmt.Errorf("parsing .gopclntab: %v", err)
-	}
-	// gosym does not reject a table it cannot recognise (one read from the wrong place, say via a
-	// forged section header): it returns no functions, which would read as "no crypto". Every Go
-	// build mode (executable, PIE, c-shared, plugin) links runtime functions, so a table without
-	// any was not really read. (runtime.main alone is not a sentinel: plugins lack it.)
-	if !slices.ContainsFunc(tab.Funcs, func(fn gosym.Func) bool { return strings.HasPrefix(fn.Name, "runtime.") }) {
-		return false, nil, fmt.Errorf("Go function table (.gopclntab) unrecognised: %d functions, none from the runtime", len(tab.Funcs))
+		return false, nil, err
 	}
 	pkgs := map[string]bool{}
 	for _, fn := range tab.Funcs {
@@ -104,6 +85,65 @@ func goCrypto(f *elf.File, xcVersion string) (uses bool, unvalidated []string, e
 	// BLAKE3 or circl links no crypto/... package, yet must not pass as crypto-free.
 	return uses || len(pkgs) > 0, slices.Sorted(maps.Keys(pkgs)), nil
 }
+
+// pclntabMagics are the function-table header magics of the Go 1.2, 1.16, 1.18 and 1.20+ formats.
+var pclntabMagics = []uint32{0xfffffffb, 0xfffffffa, 0xfffffff0, 0xfffffff1}
+
+// goFuncTable finds and parses the Go function table. Executables keep it in its own .gopclntab
+// section, but a PIE, c-shared or plugin build linked externally (the default with cgo, and for
+// those build modes before Go 1.26) folds it into .data.rel.ro with no section of its own. There it
+// is found by its header: the format magic, two zero bytes, the instruction quantum (1, 2 or 4)
+// and the pointer size (4 or 8). A candidate counts only if it parses to a table holding runtime
+// functions. gosym does not reject a table it cannot recognise (one read from the wrong place, say
+// via a forged section header): it returns no functions, which would read as "no crypto". Every Go
+// build mode links runtime functions, so a table without any was not really read.
+func goFuncTable(f *elf.File) (*gosym.Table, error) {
+	text := f.Section(".text")
+	if text == nil {
+		return nil, errors.New("Go binary without a .text section")
+	}
+	parse := func(data []byte) *gosym.Table {
+		tab, err := gosym.NewTable(nil, gosym.NewLineTable(data, text.Addr))
+		if err != nil || !slices.ContainsFunc(tab.Funcs, func(fn gosym.Func) bool { return strings.HasPrefix(fn.Name, "runtime.") }) {
+			return nil
+		}
+		return tab
+	}
+	for _, name := range []string{".gopclntab", ".data.rel.ro.gopclntab"} {
+		if sec := f.Section(name); sec != nil {
+			data, err := sec.Data()
+			if err != nil {
+				return nil, fmt.Errorf("reading %s: %v", name, err)
+			}
+			if tab := parse(data); tab != nil {
+				return tab, nil
+			}
+			return nil, fmt.Errorf("Go function table (%s) unrecognised: no runtime functions", name)
+		}
+	}
+	sec := f.Section(".data.rel.ro")
+	if sec == nil || sec.Type == elf.SHT_NOBITS || sec.Size > maxPclnSearch {
+		return nil, errors.New("Go binary without a readable function table (.gopclntab)")
+	}
+	data, err := sec.Data()
+	if err != nil {
+		return nil, fmt.Errorf("reading .data.rel.ro: %v", err)
+	}
+	for off := 0; off+8 <= len(data); off += 4 {
+		h := data[off:]
+		if !slices.Contains(pclntabMagics, f.ByteOrder.Uint32(h)) || h[4] != 0 || h[5] != 0 ||
+			(h[6] != 1 && h[6] != 2 && h[6] != 4) || (h[7] != 4 && h[7] != 8) {
+			continue
+		}
+		if tab := parse(h); tab != nil {
+			return tab, nil
+		}
+	}
+	return nil, errors.New("Go binary without a readable function table (no .gopclntab, none found in .data.rel.ro)")
+}
+
+// maxPclnSearch bounds the section read when searching for the function table.
+const maxPclnSearch = 512 << 20
 
 // isCryptoFunc: a function in a standard-library crypto package, such as "crypto/sha256.Sum256"
 // or "crypto/internal/fips140/aes.(*Block).Encrypt", or in the golang.org/x/crypto module.
