@@ -823,3 +823,52 @@ func TestAnalyzeGoBuildModes(t *testing.T) {
 		}
 	}
 }
+
+// A PyInstaller one-file bundle packs its libraries like UPX: uninspectable, whether the archive
+// sits in a "pydata" section or is appended with its cookie.
+func TestAnalyzePyInstallerOneFile(t *testing.T) {
+	_, nocrypto := goFixtures(t)
+	appended := copyWith(t, nocrypto, func(d []byte) []byte {
+		return append(d, append([]byte("MEI\x0c\x0b\x0a\x0b\x0e"), make([]byte, 80)...)...)
+	})
+	if _, err := analyze(appended, "/usr/bin/app"); err == nil || !strings.Contains(err.Error(), "PyInstaller") {
+		t.Errorf("an appended PyInstaller archive must be uninspectable, got %v", err)
+	}
+	if objcopy, err := exec.LookPath("objcopy"); err == nil && runtime.GOOS == "linux" {
+		payload := filepath.Join(t.TempDir(), "pkg")
+		os.WriteFile(payload, []byte("compressed archive"), 0o644)
+		sect := filepath.Join(t.TempDir(), "app")
+		build(t, objcopy, "--add-section", "pydata="+payload, nocrypto, sect)
+		if _, err := analyze(sect, "/usr/bin/app"); err == nil || !strings.Contains(err.Error(), "PyInstaller") {
+			t.Errorf("a pydata section must be uninspectable, got %v", err)
+		}
+	}
+}
+
+// Rust's crypto crates prefix their bundled C symbols with the crate version; those count as
+// defined crypto entry points, while CPython's local _ssl_RAND_bytes wrapper does not.
+func TestPrefixedCryptoSymbol(t *testing.T) {
+	for _, n := range []string{"aws_lc_0_45_0_RAND_bytes", "aws_lc_1_2_3_EVP_DigestInit_ex", "ring_core_0_17_14__sha256_block_data_order_avx", "ring_core_0_17_8_bn_mul_mont"} {
+		if !prefixedCryptoSymbol.MatchString(n) {
+			t.Errorf("%s must match", n)
+		}
+	}
+	for _, n := range []string{"_ssl_RAND_bytes", "my_RAND_bytes", "aws_lc_RAND_bytes", "ring_core_helper", "RAND_bytes"} {
+		if prefixedCryptoSymbol.MatchString(n) {
+			t.Errorf("%s must not match", n)
+		}
+	}
+}
+
+// End to end on a real ELF: a shared library defining aws-lc-rs's prefixed RAND_bytes fails.
+func TestAnalyzeAwsLcPrefixedLibrary(t *testing.T) {
+	gcc, _ := gccAndObjcopy(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "c.c"), []byte("int aws_lc_0_45_0_RAND_bytes(unsigned char*b,int n){return 1;}\nint ring_core_0_17_14__sha256_block_data_order(void){return 0;}\n"), 0o644)
+	lib := filepath.Join(dir, "librustapp.so")
+	build(t, gcc, "-shared", "-fPIC", "-o", lib, filepath.Join(dir, "c.c"))
+	r, err := analyze(lib, "/usr/lib/librustapp.so")
+	if err != nil || r == nil || !slices.Contains(r.Defines, "aws_lc_0_45_0_RAND_bytes") || !slices.Contains(r.Defines, "ring_core_* (ring)") || embeddedReason(r) == "" {
+		t.Fatalf("aws-lc-rs and ring symbols must count as embedded crypto, got %v %+v", err, r)
+	}
+}

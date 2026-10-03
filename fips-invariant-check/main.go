@@ -381,7 +381,7 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 			fmt.Fprintf(out, "        %s\n", v)
 		}
 	} else {
-		fmt.Fprintln(out, "ok    no crypto outside a validated FIPS module, other than listed exemptions")
+		fmt.Fprintln(out, "ok    no native crypto outside a validated FIPS module, other than listed exemptions")
 	}
 	for _, a := range allowed {
 		fmt.Fprintf(out, "      %s\n", a)

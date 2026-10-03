@@ -33,9 +33,17 @@ var cryptoSymbols = map[string]bool{
 	"hc_EVP_DigestInit_ex": true,
 }
 
+// prefixedCryptoSymbol matches the version-prefixed symbols Rust's crypto crates give their
+// bundled C/assembly, so two versions can link into one binary: aws-lc-rs (the rustls default
+// provider) builds AWS-LC as aws_lc_<maj>_<min>_<patch>_RAND_bytes and so on, and ring prefixes
+// every primitive ring_core_<maj>_<min>_<patch>_ (sometimes with a pre-release tag). Exact
+// version-prefix forms only, so a local wrapper such as CPython's _ssl_RAND_bytes still passes.
+var prefixedCryptoSymbol = regexp.MustCompile(`^aws_lc_[0-9]+_[0-9]+_[0-9]+_(RAND_bytes|EVP_DigestInit_ex|OPENSSL_init_crypto)$|^ring_core_[0-9]+_[0-9]+_[0-9]+(_[a-z0-9]+)?_`)
+
 // cryptoLibMarker names a crypto library. On its own it proves nothing: git carries
 // "OpenSSL 3.6.4" only as text for `git version --build-options` and links no crypto at all.
-var cryptoLibMarker = regexp.MustCompile(`OpenSSL [0-9]+\.[0-9]+\.[0-9]+|BoringSSL|AWS-LC|LibreSSL [0-9]`)
+// aws-lc-sys builds carry no "AWS-LC" text, only the library's own source paths.
+var cryptoLibMarker = regexp.MustCompile(`OpenSSL [0-9]+\.[0-9]+\.[0-9]+|BoringSSL|AWS-LC|LibreSSL [0-9]|aws-lc/crypto/fipsmodule`)
 
 // cryptoSourceMarker is what a compiled-in copy of the library leaves behind even when stripped:
 // its own source paths in assert/error strings. Together with cryptoLibMarker it identifies an
@@ -405,6 +413,18 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	if bytes.Contains(head, upxMagic) && (len(f.Sections) == 0 || hasSectionPrefix(f, "UPX")) {
 		return nil, errors.New("packed executable (UPX): its real contents cannot be inspected")
 	}
+	// PyInstaller --onefile: the bundled libraries (often a wheel's own OpenSSL) are compressed
+	// into a "pydata" section (objcopy --add-section, PyInstaller/building/api.py) or, in older
+	// versions, appended to the file, and extracted only at run time. The archive ends with its
+	// cookie, so an appended one puts the cookie in the file's last bytes; the magic elsewhere
+	// is just text (this tool's own binary carries it).
+	tail := make([]byte, min(st.Size(), pyiTailWindow))
+	if _, err := fh.ReadAt(tail, st.Size()-int64(len(tail))); err != nil {
+		return nil, fmt.Errorf("reading trailer: %v", err)
+	}
+	if f.Section("pydata") != nil || bytes.Contains(tail, pyiCookieMagic) {
+		return nil, errors.New("PyInstaller one-file bundle: its packed libraries cannot be inspected")
+	}
 
 	r := &fileReport{Path: imagePath}
 	needed, soname, err := dynamicInfo(f, fh)
@@ -436,7 +456,15 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 			return nil, fmt.Errorf("reading symbol table: %v", err)
 		}
 		for _, s := range syms {
-			if cryptoSymbols[s.Name] && s.Section != elf.SHN_UNDEF {
+			if s.Section == elf.SHN_UNDEF {
+				continue
+			}
+			switch {
+			case cryptoSymbols[s.Name]:
+				seen[s.Name] = true
+			case strings.HasPrefix(s.Name, "ring_core_") && prefixedCryptoSymbol.MatchString(s.Name):
+				seen["ring_core_* (ring)"] = true // one label for ring's hundreds of primitives
+			case prefixedCryptoSymbol.MatchString(s.Name):
 				seen[s.Name] = true
 			}
 		}
@@ -689,7 +717,16 @@ const (
 
 var (
 	goBuildInfoMagic = []byte("\xff Go buildinf:")
-	upxMagic         = []byte("UPX!")
+	// PyInstaller's archive cookie (PyInstaller/archive/writers.py _COOKIE_MAGIC_PATTERN).
+	pyiCookieMagic = []byte("MEI\x0c\x0b\x0a\x0b\x0e")
+)
+
+// pyiTailWindow: how far from the end of the file an appended PyInstaller cookie can sit (the
+// cookie is 88 bytes; the rest allows for trailing padding).
+const pyiTailWindow = 4096
+
+var (
+	upxMagic = []byte("UPX!")
 )
 
 // upxHeaderWindow: how far into the file the UPX header can sit (it follows the program headers).
