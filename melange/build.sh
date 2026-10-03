@@ -33,8 +33,9 @@ if [ -n "$(ls -A "$OUT/$APK_ARCH" 2>/dev/null)" ]; then
   echo "::error::$OUT/$APK_ARCH is not empty; remove it or use a fresh out-dir"; exit 1
 fi
 WORK="$(mktemp -d "${RUNNER_TEMP:-/tmp}/melange-ws.XXXXXX")"
-# Exit non-zero unless the script reached its end. macOS /bin/bash 3.2 exits 0 when `set -u` aborts
-# with an EXIT trap set (and gives the trap $? = 0), so the trap can't just preserve $?.
+# Exit non-zero unless the script reached its end. Under `set -eu`, macOS /bin/bash 3.2 exits 0 when
+# an unbound variable aborts the script with an EXIT trap set (and gives the trap $? = 0), so the
+# trap can't just preserve $?.
 DONE=0
 trap 'rm -rf "$WORK"; [ "$DONE" = 1 ] || exit 1' EXIT
 
