@@ -58,9 +58,9 @@ var otherCryptoLibs = []struct {
 }
 
 // goCrypto reads a Go binary's function table (.gopclntab, which the runtime needs and stripping
-// does not remove) and reports (a) whether it has any standard-library or x/crypto crypto
-// compiled in, and (b) which golang.org/x/crypto packages that implement crypto THEMSELVES it
-// links. It reads compiled functions, not bytes: a byte search for "crypto/..." matches binaries
+// does not remove) and reports (a) whether it has any crypto compiled in, and (b) which
+// golang.org/x/crypto packages and known third-party crypto modules that implement crypto
+// THEMSELVES it links (counted in (a) too). It reads compiled functions, not bytes: a byte search for "crypto/..." matches binaries
 // that merely contain such text (this tool's own patterns, an error message).
 //
 // (b) matters even for a FIPS-built binary: those packages run outside both validated modules,
@@ -93,7 +93,9 @@ func goCrypto(f *elf.File, xcVersion string) (uses bool, unvalidated []string, e
 			pkgs[p] = true
 		}
 	}
-	return uses, slices.Sorted(maps.Keys(pkgs)), nil
+	// Crypto from a listed third-party module is crypto use too: a binary whose only crypto is
+	// BLAKE3 or circl links no crypto/... package, yet must not pass as crypto-free.
+	return uses || len(pkgs) > 0, slices.Sorted(maps.Keys(pkgs)), nil
 }
 
 // isCryptoFunc: a function in a standard-library crypto package, such as "crypto/sha256.Sum256"
@@ -117,17 +119,19 @@ var xcryptoNoCrypto = map[string]bool{
 // HMAC loop until v0.51.0), so the exemption needs both the version and the function name. Any
 // other function in the package, such as the legacy-Keccak sha3.(*state) methods, is its own
 // implementation. hkdf is absent on purpose: it still runs its own Expand on crypto/hmac.
-var xcryptoWrappers = map[string]struct {
-	since string
-	funcs map[string]bool
-}{
-	"sha3": {"v0.44.0", set("New224", "New256", "New384", "New512", "Sum224", "Sum256", "Sum384", "Sum512",
+type wrapperSpec struct {
+	since string          // first x/crypto version in which these functions only forward
+	funcs map[string]bool // the forwarding functions (package-relative names)
+}
+
+var xcryptoWrappers = map[string]wrapperSpec{
+	"sha3": {since: "v0.44.0", funcs: set("New224", "New256", "New384", "New512", "Sum224", "Sum256", "Sum384", "Sum512",
 		"NewShake128", "NewShake256", "NewCShake128", "NewCShake256", "ShakeSum128", "ShakeSum256",
 		"(*shakeWrapper).Read", "(*shakeWrapper).Clone", "(*shakeWrapper).Size", "(*shakeWrapper).Sum",
 		"(*shakeWrapper).Write", "(*shakeWrapper).Reset", "(*shakeWrapper).BlockSize")},
-	"pbkdf2":     {"v0.51.0", set("Key")},
-	"ed25519":    {"v0.1.0", set("GenerateKey", "NewKeyFromSeed", "Sign", "Verify")},
-	"curve25519": {"v0.8.0", set("ScalarMult", "ScalarBaseMult", "X25519", "x25519")},
+	"pbkdf2":     {since: "v0.51.0", funcs: set("Key")},
+	"ed25519":    {since: "v0.1.0", funcs: set("GenerateKey", "NewKeyFromSeed", "Sign", "Verify")},
+	"curve25519": {since: "v0.8.0", funcs: set("ScalarMult", "ScalarBaseMult", "X25519", "x25519")},
 }
 
 // xcryptoVersion is the golang.org/x/crypto version the binary was built with, or "" when it is
@@ -144,32 +148,37 @@ func xcryptoVersion(bi *buildinfo.BuildInfo) string {
 	return ""
 }
 
-// versionAtLeast compares vMAJOR.MINOR.PATCH prefixes (a pseudo-version's base counts). Anything
+// versionAtLeast reports whether module version v is at least floor (both vMAJOR.MINOR.PATCH).
+// A pre-release or pseudo-version (v0.51.0-rc.1, v0.51.0-0.2025...-abc) is a commit BEFORE its
+// base version, so it counts only when its base is strictly greater than floor. Anything
 // unparseable is not "at least": the exemption it would grant is withheld.
-func versionAtLeast(v, min string) bool {
-	parse := func(s string) ([3]int, bool) {
-		var n [3]int
-		s, ok := strings.CutPrefix(s, "v")
+func versionAtLeast(v, floor string) bool {
+	parse := func(s string) (n [3]int, pre bool, ok bool) {
+		s, ok = strings.CutPrefix(s, "v")
 		if !ok {
-			return n, false
+			return n, false, false
 		}
-		parts := strings.SplitN(s, ".", 3)
+		s, _, pre = strings.Cut(s, "-")
+		parts := strings.Split(s, ".")
 		if len(parts) != 3 {
-			return n, false
+			return n, false, false
 		}
-		parts[2], _, _ = strings.Cut(parts[2], "-")
 		for i, p := range parts {
 			x, err := strconv.Atoi(p)
 			if err != nil {
-				return n, false
+				return n, false, false
 			}
 			n[i] = x
 		}
-		return n, true
+		return n, pre, true
 	}
-	a, ok1 := parse(v)
-	b, ok2 := parse(min)
-	return ok1 && ok2 && slices.Compare(a[:], b[:]) >= 0
+	a, pre, ok1 := parse(v)
+	b, _, ok2 := parse(floor)
+	if !ok1 || !ok2 {
+		return false
+	}
+	c := slices.Compare(a[:], b[:])
+	return c > 0 || (c == 0 && !pre)
 }
 
 func set(names ...string) map[string]bool {
@@ -255,15 +264,15 @@ type fileReport struct {
 	HasSource     bool     // the bytes also carry the library's own source paths (compiled-in copy)
 	IsGo          bool
 	GoFIPS        bool     // built on one of the two accepted routes (see goFIPSMode)
-	GoCrypto      bool     // Go binary that uses standard-library or x/crypto crypto
-	GoUnvalidated []string // non-standard-library packages whose crypto code it links (outside both modules)
+	GoCrypto      bool     // Go binary with any crypto compiled in (standard library, x/crypto, or GoUnvalidated)
+	GoUnvalidated []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
 	GoBuildNote   string   // the settings that decided GoFIPS, for the report
 }
 
 // scan walks root and analyzes every ELF file. Anything it cannot inspect is returned in
 // unscanned ("<image path>: <why>"); the caller fails on it. It returns an error when the scan
-// cannot mean anything: the root itself is unreadable, or it holds no ELF file at all (a wrong
-// -root, or an empty mount, would otherwise read as a clean image).
+// cannot mean anything: the root itself is unreadable, or it holds nothing to inspect (no ELF file
+// and no uninspectable path; a wrong -root, or an empty mount, would otherwise read as clean).
 func scan(root, self string) (reports []*fileReport, unscanned []string, err error) {
 	walkErr := filepath.WalkDir(root, func(real string, d fs.DirEntry, err error) error {
 		ip := imagePath(root, real)
@@ -364,7 +373,7 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	for _, get := range []func() ([]elf.Symbol, error){f.Symbols, f.DynamicSymbols} {
 		syms, err := get()
 		if errors.Is(err, elf.ErrNoSymbols) {
-			continue // stripped: no .symtab; the byte scan's markers cover this case
+			continue // no table of this kind; the byte-scan markers cover stripped embedded copies
 		}
 		if err != nil {
 			return nil, fmt.Errorf("reading symbol table: %v", err)
@@ -401,6 +410,17 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	return r, nil
 }
 
+// debugInfoOnly: a separate debug-info file, recognised positively: it has section headers but no
+// code in the file (every executable section is NOBITS, as objcopy --only-keep-debug leaves them).
+func debugInfoOnly(f *elf.File) bool {
+	if len(f.Sections) == 0 {
+		return false
+	}
+	return !slices.ContainsFunc(f.Sections, func(s *elf.Section) bool {
+		return s.Flags&elf.SHF_EXECINSTR != 0 && inFile(s)
+	})
+}
+
 func inFile(s *elf.Section) bool { return s != nil && s.Type != elf.SHT_NOBITS }
 
 func hasSectionPrefix(f *elf.File, prefix string) bool {
@@ -427,14 +447,14 @@ func dynamicInfo(f *elf.File, r io.ReaderAt) ([]string, string, error) {
 		}
 		return needed, soname, nil
 	}
-	if len(f.Sections) > 0 {
-		// Section headers are present but none is an in-file dynamic table: a separate debug-info
-		// file (.debug/.debuginfo, where .dynamic is NOBITS), or a static binary. Its program
-		// headers describe data that is not in this file, so there is nothing to read.
+	if debugInfoOnly(f) {
+		// A separate debug-info file (.debug/.debuginfo): its program headers describe data that
+		// is not in this file, so there is nothing to read.
 		return nil, "", nil
 	}
-	// No section headers at all: stripped with --strip-section-headers. The loader still uses
-	// PT_DYNAMIC, so read the libraries from there.
+	// No in-file dynamic section, but the loader ignores sections and uses PT_DYNAMIC: a file
+	// stripped with --strip-section-headers, or one whose .dynamic header is missing or
+	// mislabelled. Read the libraries from there (a static binary has no PT_DYNAMIC).
 	return dynamicFromProgs(f, r)
 }
 
@@ -537,7 +557,7 @@ func vaddrToOffset(f *elf.File, vaddr uint64) (uint64, bool) {
 
 const (
 	scanChunk   = 16 << 20 // bytes per read: memory stays bounded however large the file
-	scanOverlap = 4 << 10  // carried between chunks; longer than any pattern, so none is split
+	scanOverlap = 4 << 10  // carried between chunks; far longer than any realistic match, so none is split
 )
 
 var (

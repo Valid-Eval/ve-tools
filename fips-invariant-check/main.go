@@ -14,12 +14,13 @@
 //
 // A gate that passes what it never looked at is worse than no gate, so anything the scan cannot
 // inspect (an unreadable directory or file, a Go binary whose build info cannot be parsed, a root
-// that does not exist or contains no ELF files) fails the run instead of being skipped.
+// that does not exist or has nothing to inspect) fails the run instead of being skipped.
 //
 // Structural checks cannot prove behaviour, so the image can also register a behavioural probe
 // (trailing `-- CMD ARGS`, or the FIPS_INVARIANT_PROBE env var; time limit
-// FIPS_INVARIANT_PROBE_TIMEOUT, default 10m) that this tool runs after the scan: a language-specific script that loads the runtime's own crypto, then the native
-// libraries, and asserts FIPS behaviour (MD5 refused, SHA-256 and RAND working).
+// FIPS_INVARIANT_PROBE_TIMEOUT, default 10m) that this tool runs after the scan: a
+// language-specific script that loads the runtime's own crypto, then the native libraries, and
+// asserts FIPS behaviour (MD5 refused, SHA-256 and RAND working).
 //
 // Exit status: 0 = invariant holds, 1 = violation, 2 = usage or internal error.
 package main
@@ -178,14 +179,14 @@ func resolveRoot(root string) (string, error) {
 	return real, nil
 }
 
-// allowFilesIn lists the *.allow files in the in-image directory dir under root. A symlink is
-// resolved INSIDE the image (an absolute target is relative to root, not to the host), and a
-// dangling link is an error: from outside the image, following it on the host would read the
-// wrong directory, or silently find none.
+// allowFilesIn lists the *.allow files in the in-image directory dir under root. The directory and
+// each file are resolved INSIDE the image (an absolute symlink target is relative to root, not to
+// the host), and a dangling link is an error: following it on the host would read the wrong
+// file, or silently find none.
 func allowFilesIn(root, dir string) ([]string, error) {
 	real, err := resolveInRoot(root, dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("allowlist directory: %v", err)
 	}
 	if real == "" {
 		return nil, nil
@@ -196,8 +197,21 @@ func allowFilesIn(root, dir string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".allow") {
-			out = append(out, filepath.Join(real, e.Name()))
+		if !strings.HasSuffix(e.Name(), ".allow") {
+			continue
+		}
+		// Each entry is resolved in the image too: a packaged drop-in is often a symlink
+		// (x.allow -> /opt/vendor/x.allow), which the host would otherwise follow.
+		host, err := resolveInRoot(root, path.Join(dir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("allowlist file: %v", err)
+		}
+		st, err := os.Stat(host)
+		if err != nil {
+			return nil, fmt.Errorf("allowlist file %s: %v", path.Join(dir, e.Name()), err)
+		}
+		if st.Mode().IsRegular() {
+			out = append(out, host)
 		}
 	}
 	return out, nil
@@ -226,23 +240,23 @@ func resolveInRoot(root, p string) (string, error) {
 		st, err := os.Lstat(host)
 		if errors.Is(err, os.ErrNotExist) {
 			if viaFinalLink {
-				return "", fmt.Errorf("allowlist directory %s is a dangling symlink (%s does not exist)", p, next)
+				return "", fmt.Errorf("%s is a dangling symlink (%s does not exist)", p, next)
 			}
 			return "", nil
 		}
 		if err != nil {
-			return "", fmt.Errorf("allowlist directory %s: %v", p, err)
+			return "", fmt.Errorf("%s: %v", p, err)
 		}
 		if st.Mode()&os.ModeSymlink == 0 {
 			resolved = next
 			continue
 		}
 		if hops++; hops > 40 {
-			return "", fmt.Errorf("allowlist directory %s: too many levels of symlinks", p)
+			return "", fmt.Errorf("%s: too many levels of symlinks", p)
 		}
 		target, err := os.Readlink(host)
 		if err != nil {
-			return "", fmt.Errorf("allowlist directory %s: %v", p, err)
+			return "", fmt.Errorf("%s: %v", p, err)
 		}
 		if len(pending) == 0 {
 			viaFinalLink = true

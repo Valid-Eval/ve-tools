@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -33,14 +32,23 @@ var xcModule = map[string]string{
 // (version unknown) keeps the forwarding function reported.
 const xcGoMod = "module fixture\ngo 1.24\nrequire golang.org/x/crypto v0.57.0\nreplace golang.org/x/crypto => ./xc\n"
 
+// withXC is a fixture program built against the stand-in x/crypto.
+func withXC(main string) map[string]string {
+	files := map[string]string{"go.mod": xcGoMod, "main.go": main}
+	for f, c := range xcModule {
+		files[f] = c
+	}
+	return files
+}
+
 func goFixtures(t *testing.T) (withCrypto, withoutCrypto string) {
 	t.Helper()
 	return goFixture(t, "crypto"), goFixture(t, "nocrypto")
 }
 
-// goFixture returns the path of a built fixture: crypto, nocrypto, symtab (nocrypto with its
-// symbol table kept), xwrap (std crypto plus only
-// x/crypto forwarding functions) or xown (an x/crypto function with its own implementation).
+// goFixture returns the path of a built fixture: crypto, nocrypto, symtab (nocrypto with its symbol
+// table kept), xwrap (std crypto plus an x/crypto forwarding function), xown (an x/crypto function
+// with its own implementation) or tponly (crypto only from a listed third-party module).
 func goFixture(t *testing.T, name string) string {
 	t.Helper()
 	fixtureOnce.Do(func() {
@@ -54,17 +62,19 @@ func goFixture(t *testing.T, name string) string {
 		progs := map[string]map[string]string{
 			"crypto":   {"go.mod": plain, "main.go": "package main\nimport (\"crypto/sha256\";\"fmt\")\nfunc main(){fmt.Println(sha256.Sum256([]byte(\"x\")))}\n"},
 			"nocrypto": {"go.mod": plain, "main.go": "package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hello\")}\n"},
-			"xwrap":    {"go.mod": xcGoMod, "main.go": "package main\nimport (\"fmt\";\"golang.org/x/crypto/sha3\")\nfunc main(){fmt.Println(sha3.New256([]byte(\"x\")))}\n"},
+			"xwrap":    withXC("package main\nimport (\"fmt\";\"golang.org/x/crypto/sha3\")\nfunc main(){fmt.Println(sha3.New256([]byte(\"x\")))}\n"),
 			"symtab":   {"go.mod": plain, "main.go": "package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hello\")}\n"},
-			"xown":     {"go.mod": xcGoMod, "main.go": "package main\nimport (\"fmt\";\"golang.org/x/crypto/sha3\")\nfunc main(){fmt.Println(sha3.Legacy([]byte(\"x\")))}\n"},
+			"xown":     withXC("package main\nimport (\"fmt\";\"golang.org/x/crypto/sha3\")\nfunc main(){fmt.Println(sha3.Legacy([]byte(\"x\")))}\n"),
+			// No crypto/... at all: its only crypto is a listed third-party module (stand-in).
+			"tponly": {
+				"go.mod":              "module fixture\ngo 1.24\nrequire github.com/aead/chacha20 v0.0.0\nreplace github.com/aead/chacha20 => ./tp\n",
+				"tp/go.mod":           "module github.com/aead/chacha20\ngo 1.24\n",
+				"tp/chacha/chacha.go": "package chacha\n//go:noinline\nfunc XORKeyStream(dst, src []byte) { for i := range src { dst[i] = src[i] ^ byte(i*7) } }\n",
+				"main.go":             "package main\nimport (\"fmt\";\"github.com/aead/chacha20/chacha\")\nfunc main(){b := make([]byte, 4); chacha.XORKeyStream(b, []byte(\"abcd\")); fmt.Println(b)}\n",
+			},
 		}
 		for name, files := range progs {
 			pd := filepath.Join(dir, "src-"+name)
-			if strings.Contains(files["go.mod"], "replace") {
-				for f, c := range xcModule {
-					files[f] = c
-				}
-			}
 			for f, c := range files {
 				if err := os.MkdirAll(filepath.Dir(filepath.Join(pd, f)), 0o755); err != nil {
 					fixtureErr = err
@@ -155,7 +165,10 @@ func fixtureRoot(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(root, "usr/bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(nocrypto)
+	data, err := os.ReadFile(nocrypto)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "usr/bin/tool"), data, 0o755); err != nil {
 		t.Fatal(err)
 	}
