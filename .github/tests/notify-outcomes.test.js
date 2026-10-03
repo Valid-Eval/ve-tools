@@ -225,13 +225,12 @@ async function main() {
     ['retry with email now waived by the opt-out keeps pending:email', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:email'] }, env: { SG_API_KEY: '', ALLOW_UNCONFIGURED_CHANNELS: 'true' } }, r => {
       green(r); assert.deepStrictEqual(r.removed, []); assert.deepStrictEqual(r.added, []);
     }],
-    ['both delivered on retry: a 404 on the first removal still removes the second', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira', 'pending:email'] }, removeLabelFails: 404 }, r => {
+    ['both delivered on retry: removal 404s count as already removed, and both removals are attempted', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira', 'pending:email'] }, removeLabelFails: 404 }, r => {
       green(r); assert.deepStrictEqual(r.removed, ['pending:jira', 'pending:email']);
     }],
     ['label removal failure (non-404) is recorded as retry-state', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, removeLabelFails: 500 }, r => {
       red(r, { lines: 1 }, 'CRED_A x retry-state', 'could not remove pending:jira');
     }],
-    ['label removal 404 is treated as already removed', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, removeLabelFails: 404 }, green],
     ['a phrase-matching but non-exact open issue is not treated as the item\'s issue', { items: ['credential'], searchItems: [{ title: 'Rotate credential: CRED_A_OLD', labels: ['pending:jira'] }] }, r => {
       green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]); assert.deepStrictEqual(r.removed, []);
     }],
