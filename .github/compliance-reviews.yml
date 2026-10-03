@@ -1,0 +1,57 @@
+# Compliance Review Schedule
+#
+# The credential-rotation-reminder workflow also checks this file daily and sends
+# notifications (GitHub issue, Jira ticket, email) when a review is within its
+# remind_days_before window. Kept separate from credential-rotations.yml so that
+# file stays credential-only.
+#
+# After completing a review:
+#   1. Record the outcome where compliance_ref points (e.g. the ve-compliance entry)
+#   2. Set 'due' below to the next review date (this is how a review recurs), or
+#      remove the entry if no further review is needed
+#   3. Commit and push the change
+#   4. Close the corresponding GitHub issue and Jira ticket
+#
+# Required fields per review: name, description, due, steps, compliance_ref, jira_ref
+# Optional fields (with defaults):
+#   remind_days_before: 15        — days before the due date to start reminding
+#   jira_priority: High           — Jira ticket priority
+#   notes: (none)                 — additional context shown in notifications
+
+email_to: tools@valideval.com
+email_from: tools@valideval.com
+jira_project: INF
+
+reviews:
+  - name: INF-382-pdf-exporter-renderer-gates
+    description: >-
+      Evaluate the gates for moving pdf-exporter's headless Chromium off TLS
+      (plain-HTTP in-cluster rendering behind the mesh), the follow-up to the
+      pdf-exporter embedded-crypto exception.
+    due: "2026-11-01"
+    remind_days_before: 30
+    steps: |-
+      1. Gate (a): observe the prod mesh images and confirm they are FIPS builds, and record the CMVP module backing ztunnel
+      2. Gate (b): give the renderer its own frontend/API base, not the absolute public https URL
+      3. Gate (c): capture a CDP request trace of a real report render and allowlist or abort off-cluster origins
+      4. Record the outcome on INF-382 and in the ve-compliance entry
+    notes: |-
+      - Even with all three gates done, Chromium, chromedriver and NSS remain embedded crypto, so the exception stays unless image-browser changes
+      - The base's Node has no fips.so; that is fixable in image-browser once it is un-deferred
+    compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
+    jira_ref: INF-382
+
+  - name: pdf-exporter-embedded-crypto-exception-review
+    description: >-
+      Review the documented exception for crypto outside the FIPS provider in the
+      prod pdf-exporter image (Chromium BoringSSL, chromedriver, NSS, and Node
+      without fips.so).
+    due: "2026-12-31"
+    remind_days_before: 30
+    steps: |-
+      1. Re-check the exception scope against the current pdf-exporter and image-browser images
+      2. Review the status of the INF-382 gates and of image-browser
+      3. Decide: close the exception, extend it, or make it standing with periodic re-review
+      4. Record the decision in the ve-compliance entry, then set 'due' here to the next review date (or remove this entry if closed)
+    compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
+    jira_ref: INF-382
