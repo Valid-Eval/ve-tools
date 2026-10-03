@@ -1,0 +1,38 @@
+name: melange
+
+# Guards for the shared melange recipes (see melange/README.md). Nothing here publishes: the job
+# builds and tests the packages the same way image-* CIs do, then discards them.
+on:
+  pull_request:
+    paths:
+      - "melange/**"
+      - "renovate.json"
+      - ".github/workflows/melange.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  renovate-regex:
+    # Renovate's regex managers fail silently: if an edit breaks the match, Renovate just stops
+    # proposing updates (for libpq-17.yaml, PostgreSQL security releases). Require exactly one match
+    # per file for every customManager that targets melange/.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Check melange customManagers match exactly once
+        run: node .github/scripts/check-renovate-regex.js melange/
+
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Build and test libpq-17 (amd64)
+        run: melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/melange-out"
