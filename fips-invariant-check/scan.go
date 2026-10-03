@@ -86,9 +86,10 @@ func goCrypto(f *elf.File, xcVersion string) (uses bool, unvalidated []string, e
 	}
 	// gosym does not reject a table it cannot recognise (one read from the wrong place, say via a
 	// forged section header): it returns no functions, which would read as "no crypto". Every Go
-	// program links runtime.main, so its absence means the table was not really read.
-	if tab.LookupFunc("runtime.main") == nil {
-		return false, nil, fmt.Errorf("Go function table (.gopclntab) unrecognised: %d functions, no runtime.main", len(tab.Funcs))
+	// build mode (executable, PIE, c-shared, plugin) links runtime functions, so a table without
+	// any was not really read. (runtime.main alone is not a sentinel: plugins lack it.)
+	if !slices.ContainsFunc(tab.Funcs, func(fn gosym.Func) bool { return strings.HasPrefix(fn.Name, "runtime.") }) {
+		return false, nil, fmt.Errorf("Go function table (.gopclntab) unrecognised: %d functions, none from the runtime", len(tab.Funcs))
 	}
 	pkgs := map[string]bool{}
 	for _, fn := range tab.Funcs {

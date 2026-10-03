@@ -796,3 +796,30 @@ func TestDynamicFromProgs32Bit(t *testing.T) {
 		t.Fatalf("want DT_NEEDED [libcrypto.so.3], got %v %v", needed, err)
 	}
 }
+
+// Every real Go build mode passes the function-table guard, including -buildmode=plugin, which
+// has no runtime.main.
+func TestAnalyzeGoBuildModes(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("plugin and c-shared builds need linux with cgo")
+	}
+	if _, err := exec.LookPath("gcc"); err != nil {
+		t.Skip("gcc not available")
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module m\ngo 1.24\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "p.go"), []byte("package main\nimport \"C\"\nimport \"crypto/sha256\"\n//export H\nfunc H() int { s := sha256.Sum256(nil); return int(s[0]) }\nfunc main() {}\n"), 0o644)
+	for _, mode := range []string{"plugin", "c-shared", "pie", "exe"} {
+		out := filepath.Join(dir, "out-"+mode)
+		cmd := exec.Command("go", "build", "-buildmode="+mode, "-o", out, ".")
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=1", "GOFLAGS=")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s build: %v %s", mode, err, b)
+		}
+		r, err := analyze(out, "/usr/lib/"+mode)
+		if err != nil || r == nil || !r.IsGo || !r.GoCrypto {
+			t.Errorf("-buildmode=%s must analyze as Go with crypto, got %v %+v", mode, err, r)
+		}
+	}
+}
