@@ -54,7 +54,8 @@ jobs:
           expect_fail() {  # <expected message> <command...>
             local want="$1"; shift
             if out="$("$@" 2>&1)"; then echo "::error::accepted: $*"; exit 1; fi
-            echo "$out"
+            # Show the expected failure without turning it into a red annotation on a green run.
+            sed 's/::error::/(expected) /' <<<"$out"
             grep -qF -- "$want" <<<"$out" || { echo "::error::failed without '$want': $*"; exit 1; }
           }
           expect_fail "unknown arch 'mips'" melange/build.sh melange/libpq-17.yaml mips "$RUNNER_TEMP/x"
@@ -69,6 +70,14 @@ jobs:
           expect_fail "ran 2 test blocks, recipe has 3" melange/check-tests-ran.sh melange/libpq-17.yaml "$log.missing"
           printf 'package:\n  name: x\n' > "$RUNNER_TEMP/notests.yaml"
           expect_fail "has no test blocks" melange/check-tests-ran.sh "$RUNNER_TEMP/notests.yaml" "$log"
+          expect_fail "cannot read" melange/check-tests-ran.sh melange/libpq-17.yaml "$RUNNER_TEMP/absent.log"
+          # A failure after the EXIT trap is set must exit exactly 1 and leave no workspace behind:
+          # a stub docker that exits 7 stands in for any mid-run failure.
+          mkdir -p "$RUNNER_TEMP/stub" && printf '#!/bin/sh\nexit 7\n' > "$RUNNER_TEMP/stub/docker"
+          chmod +x "$RUNNER_TEMP/stub/docker"
+          rc=0; PATH="$RUNNER_TEMP/stub:$PATH" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/trap-out" || rc=$?
+          [ "$rc" = 1 ] || { echo "::error::build.sh exited $rc after a mid-run failure, expected 1"; exit 1; }
+          if ls -d "$RUNNER_TEMP"/melange-ws.* 2>/dev/null; then echo "::error::build.sh left its workspace behind"; exit 1; fi
 
       - name: Build and test libpq-17 (amd64)
         run: melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/melange-out"

@@ -12,6 +12,8 @@ const RECIPE = 'vars:\n  pg-tag: REL_17_11\n  pg-commit: 083ac033419f690758508e0
 const MANAGER = {
   description: "PostgreSQL source pin: test",
   customType: "regex",
+  depNameTemplate: "postgres/postgres",
+  datasourceTemplate: "github-tags",
   managerFilePatterns: ["/^melange/libpq-17\\.yaml$/"],
   matchStrings: ["pg-tag: (?<currentValue>REL_17_\\d+)\\n  pg-commit: (?<currentDigest>[0-9a-f]{40})\\npackage:\\n  version: \"[0-9.]+\""],
 };
@@ -110,7 +112,8 @@ test("a recipe in a subdirectory must be covered too", () => {
 });
 
 test("a manager with no matchStrings fails", () => {
-  const r = run({ managers: [{ ...MANAGER, matchStrings: [] }] });
+  // A second, valid manager keeps the recipe covered, so only the matchStrings check can fail.
+  const r = run({ managers: [MANAGER, { ...MANAGER, description: "empty", matchStrings: [] }] });
   assert.strictEqual(r.code, 1, r.out);
   assert.match(r.out, /no matchStrings/);
 });
@@ -125,4 +128,32 @@ test("% in an annotation is encoded", () => {
   const r = run({ managers: [{ ...MANAGER, matchStrings: ["(?<currentValue>100%)"] }] });
   assert.strictEqual(r.code, 1, r.out);
   assert.match(r.out, /\(\?<currentValue>100%25\)/);
+});
+
+test("CR and LF in an annotation are encoded", () => {
+  const r = run({ managers: [{ ...MANAGER, matchStrings: ["(?<currentValue>a)\r\nb"] }] });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /%0D%0Ab/);
+});
+
+test("a renamed capture group fails", () => {
+  const ms = MANAGER.matchStrings[0].replace("?<currentDigest>", "?<digest>");
+  const r = run({ managers: [{ ...MANAGER, matchStrings: [ms] }] });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /unknown capture group digest/);
+});
+
+test("an empty currentValue fails", () => {
+  const ms = MANAGER.matchStrings[0].replace("(?<currentValue>REL_17_\\d+)", "REL_17_\\d+(?<currentValue>)");
+  const r = run({ managers: [{ ...MANAGER, matchStrings: [ms] }] });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /no currentValue capture/);
+});
+
+test("no depName and no datasource fail", () => {
+  const { depNameTemplate, datasourceTemplate, ...bare } = MANAGER;
+  const r = run({ managers: [bare] });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /no depName/);
+  assert.match(r.out, /no datasource/);
 });

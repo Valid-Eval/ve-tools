@@ -1,6 +1,8 @@
 // Fail unless Renovate's regex customManagers still cover the files under <path-prefix>:
 //  - every regex customManager whose file pattern names the prefix targets at least one file;
-//  - it has matchStrings, and each matches each targeted file exactly once with a currentValue;
+//  - it has matchStrings, and each matches each targeted file exactly once, yielding what Renovate
+//    needs: a non-empty currentValue, a depName and a datasource (captured or templated), and no
+//    capture group Renovate doesn't recognise (a renamed currentDigest is silently ignored);
 //  - every recipe (*.yaml, *.yml) under the prefix is targeted by at least one regex customManager.
 // Renovate itself reports nothing when a manager stops matching (a renamed file, a typo'd
 // pattern, an edit that breaks the matchString): it just stops proposing updates.
@@ -23,8 +25,8 @@ function walk(dir) {
   });
 }
 
-// managerFilePatterns entries must be "/regex/" strings. (Legacy fileMatch entries are bare regexes,
-// compiled directly below.)
+// This checker only understands "/regex/" managerFilePatterns entries (Renovate also accepts globs).
+// Legacy fileMatch entries are bare regexes, compiled directly below.
 function toRegex(pattern) {
   const m = pattern.match(/^\/(.*)\/([a-z]*)$/);
   if (!m) throw new Error(`unsupported managerFilePatterns entry (not /regex/): ${pattern}`);
@@ -37,6 +39,10 @@ function annotate(file, msg) {
   const where = file ? ` file=${file}` : "";
   console.log(`::error${where}::${msg.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
 }
+
+// Capture groups Renovate's regex manager reads; any other name is dropped without a warning.
+const KNOWN_GROUPS = new Set(["depName", "packageName", "currentValue", "currentDigest", "datasource",
+  "versioning", "extractVersion", "registryUrl", "depType", "indentation"]);
 
 const config = JSON.parse(fs.readFileSync("renovate.json", "utf8"));
 const files = walk(prefix).map((f) => f.split(path.sep).join("/"));
@@ -73,10 +79,17 @@ for (const mgr of config.customManagers || []) {
       if (matches.length !== 1) {
         annotate(file, `Renovate matchString matches ${matches.length} times, expected 1: ${ms}`);
         failed = true;
-      } else if (!matches[0].groups || matches[0].groups.currentValue === undefined) {
-        // Renovate drops a match that yields no currentValue, again without saying so.
-        annotate(file, `Renovate matchString has no currentValue capture: ${ms}`);
-        failed = true;
+      } else {
+        // Renovate drops or misreads an incomplete match without saying so.
+        const g = matches[0].groups || {};
+        const problems = Object.keys(g).filter((k) => !KNOWN_GROUPS.has(k)).map((k) => `unknown capture group ${k}`);
+        if (!g.currentValue) problems.push("no currentValue capture");
+        if (!g.depName && !g.packageName && !mgr.depNameTemplate && !mgr.packageNameTemplate) problems.push("no depName");
+        if (!g.datasource && !mgr.datasourceTemplate) problems.push("no datasource");
+        for (const p of problems) {
+          annotate(file, `Renovate matchString ${p}: ${ms}`);
+          failed = true;
+        }
       }
     }
   }

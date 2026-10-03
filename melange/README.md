@@ -62,7 +62,7 @@ Renovate, configured in `renovate.json`, tracks two things:
   - PostgreSQL patch releases are mostly security fixes, so this dependency skips the repo-wide 7-day age gate and weekly schedule.
 - **The digest-pinned melange image** in `build.sh`.
 
-CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/`, `renovate.json`, `.github/scripts/` or the workflow itself. It tests and runs `.github/scripts/check-renovate-regex.js`, which requires every recipe to be covered by a regex customManager whose matchStrings each match exactly once. It then checks, without docker, that `build.sh`'s argument and out-dir guards and `check-tests-ran.sh` reject bad input with the expected message, and runs `build.sh` (build and package tests) on amd64.
+CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/`, `renovate.json`, `.github/scripts/` or the workflow itself. It tests and runs `.github/scripts/check-renovate-regex.js`, which requires every recipe to be covered by a regex customManager whose matchStrings each match exactly once. It then checks, without docker, that `build.sh`'s argument and out-dir guards and `check-tests-ran.sh` reject bad input with the expected message, and that `build.sh` exits 1 and cleans up after a mid-run failure. Finally it runs `build.sh` (build and package tests) on amd64.
 
 Merging a recipe change and tagging `melange-<recipe>/vN+1` lets each image-\* Renovate pick up the new tag.
 
