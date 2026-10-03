@@ -27,8 +27,8 @@
 vars:
   # OpenSSL line (3.x or 4.x) of the CONSUMING images' runtimes (CPython _ssl, Ruby openssl.so). It
   # must follow them: a different major is two cores in one process. Renovate cannot see that
-  # coupling, so the controls are this comment, the consumers' own asserts (image-python checks
-  # libpq's major == CPython _ssl's) and fips-invariant-check. ONE edit point: the build env's -dev
+  # coupling, so the controls are this comment, the consuming images' own checks and
+  # fips-invariant-check. ONE edit point: the build env's -dev
   # package, the -dev subpackage's dependency, the header check and every linkage assertion below
   # derive from these two. A single recipe serves one line at a time: if two consumers ever need
   # different cores at once, build a variant per line instead of moving these. Bump `epoch` when
@@ -63,11 +63,11 @@ environment:
       #    fips-invariant-check's linkage scan fails the image.
       #  - MINOR (e.g. 3.6 vs 3.7): same soname, so the linkage scan PASSES; libpq would reference
       #    newer versioned symbols (OPENSSL_3.7.0) and fail only when loaded.
-      # Wolfi's openssl-3.x-dev is an empty meta package; the headers are in openssl-dev, which it
-      # constrains to the same minor (`openssl-dev~3.6` since 3.6.5-r1; earlier revisions left it
-      # unversioned). openssl-4.x-dev carries its own headers. Because that pin is Wolfi's packaging
-      # and not ours, the first pipeline step asserts the header version, and the package tests
-      # assert the newest OPENSSL_x.y symbol version the binaries need.
+      # Wolfi's openssl-3.6-dev is an empty meta package whose headers come from openssl-dev; whether
+      # it holds openssl-dev to the same minor depends on the revision (as of 2026-10 it does; 3.6.5-r0
+      # and earlier did not). openssl-4.0-dev carries its own headers. Because that pin is Wolfi's
+      # packaging and not ours, the first pipeline step asserts the header version, and the package
+      # tests assert that no OPENSSL_x.y symbol version outside the vars' line is needed.
       # Not pinned to a PATCH version, unlike the image-side header install: melange builds in a
       # throwaway Wolfi env, so nothing here can upgrade a base image's packages, and OpenSSL adds
       # no symbols in patch releases.
@@ -82,7 +82,9 @@ pipeline:
   # Fail before compiling if the headers are not the OpenSSL line the vars name.
   - runs: |
       h=/usr/include/openssl/opensslv.h
-      hv="$(sed -n 's/^# *define OPENSSL_VERSION_MAJOR *\([0-9]*\).*/\1/p' "$h").$(sed -n 's/^# *define OPENSSL_VERSION_MINOR *\([0-9]*\).*/\1/p' "$h")"
+      major="$(sed -n 's/^# *define OPENSSL_VERSION_MAJOR *\([0-9]*\).*/\1/p' "$h")"
+      minor="$(sed -n 's/^# *define OPENSSL_VERSION_MINOR *\([0-9]*\).*/\1/p' "$h")"
+      hv="$major.$minor"
       echo "OpenSSL headers: $hv"
       [ "$hv" = "${{vars.openssl-major}}.${{vars.openssl-minor}}" ] || {
         echo "FAIL: OpenSSL headers are $hv, recipe vars say ${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1; }
@@ -154,6 +156,8 @@ test:
         [ -n "$vers" ] || { echo "FAIL: libpq.so.5 references no OPENSSL_* symbol versions" >&2; exit 1; }
         for v in $vers; do
           maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
+          # A non-numeric minor would make -gt error out and take the pass branch; refuse it.
+          case "$min" in ''|*[!0-9]*) echo "FAIL: cannot parse OPENSSL_$v" >&2; exit 1 ;; esac
           if [ "$maj" != "${{vars.openssl-major}}" ] || [ "$min" -gt "${{vars.openssl-minor}}" ]; then
             echo "FAIL: libpq.so.5 needs OPENSSL_$v, outside OpenSSL ${{vars.openssl-major}}.0-${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1
           fi
@@ -194,7 +198,9 @@ subpackages:
             pg_config --version || { echo "FAIL: pg_config does not run" >&2; exit 1; }
             # The dependency above must bring THIS line's OpenSSL headers, not another line's.
             h=/usr/include/openssl/opensslv.h
-            hv="$(sed -n 's/^# *define OPENSSL_VERSION_MAJOR *\([0-9]*\).*/\1/p' "$h").$(sed -n 's/^# *define OPENSSL_VERSION_MINOR *\([0-9]*\).*/\1/p' "$h")"
+            major="$(sed -n 's/^# *define OPENSSL_VERSION_MAJOR *\([0-9]*\).*/\1/p' "$h")"
+            minor="$(sed -n 's/^# *define OPENSSL_VERSION_MINOR *\([0-9]*\).*/\1/p' "$h")"
+            hv="$major.$minor"
             echo "OpenSSL headers installed with ve-libpq-17-dev: $hv"
             [ "$hv" = "${{vars.openssl-major}}.${{vars.openssl-minor}}" ] || {
               echo "FAIL: ve-libpq-17-dev brought OpenSSL $hv headers, expected ${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1; }
@@ -233,13 +239,23 @@ subpackages:
               # its libpq loads libcrypto.so.4 and krb5's libk5crypto loads .so.3.
               # LD_TRACE_LOADED_OBJECTS makes glibc's loader list the closure without running the
               # tool, wherever the loader lives on this arch.
-              cores="$(LD_TRACE_LOADED_OBJECTS=1 "/usr/bin/$b" | sed -n 's/^[[:space:]]*\(lib\(crypto\|ssl\)\.so\.[0-9]*\) =>.*/\1/p' | sort -u | tr '\n' ' ')"
+              trace="$(LD_TRACE_LOADED_OBJECTS=1 "/usr/bin/$b")"
+              if echo "$trace" | grep -q 'not found'; then
+                echo "$trace" >&2; echo "FAIL: $b has unresolved libraries" >&2; exit 1
+              fi
+              cores="$(echo "$trace" | sed -n 's/^[[:space:]]*\(lib\(crypto\|ssl\)\.so\.[0-9]*\) => \/.*/\1/p' | sort -u | tr '\n' ' ')"
               echo "$b OpenSSL closure: $cores"
               [ "$cores" = "libcrypto.so.${{vars.openssl-major}} libssl.so.${{vars.openssl-major}} " ] || {
                 echo "FAIL: $b must load exactly libcrypto.so.${{vars.openssl-major}} + libssl.so.${{vars.openssl-major}} (via libpq), no other OpenSSL" >&2; exit 1; }
               # Tools that link libcrypto directly carry their own versioned-symbol requirements.
-              for v in $(readelf -W -V "/usr/bin/$b" | sed -n 's/.*Name: OPENSSL_\([0-9][0-9.]*\).*/\1/p' | sort -u); do
+              vers="$(readelf -W -V "/usr/bin/$b" | sed -n 's/.*Name: OPENSSL_\([0-9][0-9.]*\).*/\1/p' | sort -u | tr '\n' ' ')"
+              echo "$b OpenSSL symbol versions: ${vers:-none}"
+              if echo "$needed" | grep -q '^libcrypto\.so\.'; then
+                [ -n "$vers" ] || { echo "FAIL: $b links libcrypto but references no OPENSSL_* symbol versions" >&2; exit 1; }
+              fi
+              for v in $vers; do
                 maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
+                case "$min" in ''|*[!0-9]*) echo "FAIL: cannot parse OPENSSL_$v" >&2; exit 1 ;; esac
                 if [ "$maj" != "${{vars.openssl-major}}" ] || [ "$min" -gt "${{vars.openssl-minor}}" ]; then
                   echo "FAIL: $b needs OPENSSL_$v, outside OpenSSL ${{vars.openssl-major}}.0-${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1
                 fi

@@ -2,29 +2,40 @@ name: melange
 
 # Guards for the shared melange recipes (see melange/README.md). Nothing here publishes: the job
 # builds and tests the packages the same way image-* CIs do, then discards them.
+# pull_request only (never pull_request_target): build-test runs PR-supplied recipe code as root
+# through the runner's docker socket, which is acceptable only with no secrets and a read-only token.
 on:
   pull_request:
     paths:
       - "melange/**"
       - "renovate.json"
+      - ".github/scripts/**"
       - ".github/workflows/melange.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: melange-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   renovate-regex:
     # Renovate's regex managers fail silently: if an edit breaks the match, Renovate just stops
-    # proposing updates (for libpq-17.yaml, PostgreSQL security releases). Require exactly one match
-    # per file for every customManager that targets melange/.
+    # proposing updates (for libpq-17.yaml, PostgreSQL security releases).
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
-      - name: Check melange customManagers match exactly once
+      - name: Test the checker
+        run: node --test .github/scripts/check-renovate-regex.test.js
+
+      - name: Check melange customManagers cover every recipe, once each
         run: node .github/scripts/check-renovate-regex.js melange/
 
   build-test:
@@ -33,6 +44,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: build.sh rejects bad arguments and a reused out-dir (no docker needed)
+        run: |
+          if melange/build.sh melange/libpq-17.yaml mips "$RUNNER_TEMP/x"; then
+            echo "::error::build.sh accepted an unknown arch"; exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/stale/x86_64" && touch "$RUNNER_TEMP/stale/x86_64/old.apk"
+          if melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/stale"; then
+            echo "::error::build.sh accepted a non-empty out-dir"; exit 1
+          fi
 
       - name: Build and test libpq-17 (amd64)
         run: melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/melange-out"

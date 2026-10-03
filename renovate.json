@@ -64,7 +64,7 @@
   ],
   "customManagers": [
     {
-      "description": "PostgreSQL source pin in melange/libpq-17.yaml: tag, commit and package version move together. Custom regex groups are not available to autoReplaceStringTemplate, so the three lines must stay adjacent; the version is derived from the tag (REL_17_11 -> 17.11) with the built-in replace helper. Verified end to end with Renovate 44.132.2's doAutoReplace, 2026-10-02.",
+      "description": "PostgreSQL source pin in melange/libpq-17.yaml: tag, commit and package version move together. Custom regex groups are not available to autoReplaceStringTemplate, so the pg-tag, pg-commit, package: and version: lines must stay contiguous and in order (CI checks the match); the version is derived from the tag (REL_17_11 -> 17.11) with the built-in replace helper. Verified end to end with Renovate 44.132.2's doAutoReplace, 2026-10-02.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^melange/libpq-17\\.yaml$/"

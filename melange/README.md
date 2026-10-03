@@ -21,33 +21,33 @@ The packages are real apks:
 
 ## Package tests
 
-Each recipe's `test:` pipelines are the build's own checks, and `build.sh` runs them with `melange test` after building (`melange build` never runs them). For `libpq-17.yaml`, with `N.M` the OpenSSL line from the recipe's vars:
+`build.sh` runs these checks. The header check is a build pipeline step; the rest are the recipe's `test:` pipelines, which only `melange test` runs (`melange build` never does), so `build.sh` runs it after building and fails unless its log shows every test block ran. For `libpq-17.yaml`, with `N.M` the OpenSSL line from the recipe's vars:
 
 - **The build env's OpenSSL headers are `N.M`.** Checked before compiling. Wolfi's `openssl-N.M-dev` is what selects them today, but that pin is Wolfi's packaging, not ours.
 - **`libpq.so.5` links only libc, libm, `libssl.so.N` and `libcrypto.so.N`.** This catches a configure or toolchain change that drags in zlib, krb5 or a second OpenSSL major.
-- **`libpq.so.5` and the client tools need no OpenSSL symbol version newer than `N.M`.** The soname is the same across minors, so this is what catches a libpq built against newer headers than the runtime's library.
+- **`libpq.so.5` and the client tools need no OpenSSL symbol version newer than `N.M`.** The soname is the same across minors, so this is the check meant to catch a libpq built against newer headers than the runtime's library.
 - **Each client tool's resolved library closure contains only the `.so.N` OpenSSL core.** This is checked with glibc's `LD_TRACE_LOADED_OBJECTS`, not the tool's own NEEDED entries. A second core usually arrives one level down, so a NEEDED-only check passes Wolfi's client even though that client loads both cores.
 - **`pg_dump` and `pg_restore` link zlib, and `pg_dump` accepts gzip compression.** A build without zlib rejects `-Z gzip` before connecting.
 - **`ve-libpq-17-dev` installs its headers, `libpq.pc` and `pg_config`, and brings `N.M` OpenSSL headers.** Both OpenSSL lines' `-dev` packages satisfy `libpq.pc`'s `pc:libcrypto`, so the subpackage depends on `openssl-N.M-dev` explicitly. Without it, a fresh `apk add ve-libpq-17-dev` chose `openssl-4.0-dev` next to a 3.x libpq.
 
-Each check has been seen failing on a known-bad input, and passing on the real build:
+These checks have been seen failing on a known-bad input and passing on the real build. The others (the libz NEEDED check, the per-tool symbol-version loop, the `-dev` file checks and the run/parse guards) have not been run against a known-bad input.
 
 | Check | Known-bad input | Result |
 |---|---|---|
 | Header version | build env given `openssl-4.0-dev` with vars at 3.6 | `build.sh` fails before compiling |
 | libpq NEEDED set | a `--with-gssapi` build (`libgssapi_krb5.so.2` appears) | `build.sh` fails in `melange test` |
-| Symbol-version ceiling | the same loop run on `libssl.so.3` (needs `OPENSSL_3.2.0`+) with a 3.0 or 4.0 ceiling | fails; passes at 3.6 |
+| Symbol-version ceiling | proxy input: the same loop pointed at `libssl.so.3` (needs `OPENSSL_3.2.0`+) with ceiling 3.0 (minor branch) or 4.0 (major branch); no libpq built against newer headers has been run | fails; passes at 3.6 |
 | `-dev` headers | the `ve-libpq-17-dev` built before the explicit dependency (fresh install pulled `openssl-4.0-dev`) | `melange test` fails |
 | Client closure | Wolfi's `postgresql-17-client` (loads `.so.3` and `.so.4`) | fails |
 | zlib probe | a `--without-zlib` build | fails |
 
-The recipe also builds and passes every check with the vars set to 4.0, against Wolfi's `openssl-4.0-dev`.
+Checked locally on arm64 at `e627ddd` (not in CI): with the vars at 4.0 the recipe built and passed every check against Wolfi's `openssl-4.0-dev`. A PR that moves the vars runs CI at the new line.
 
 ## OpenSSL line
 
 The recipe's `openssl-major`/`openssl-minor` vars are the one edit point. The build env's `-dev` package, the `-dev` subpackage's dependency and every check above derive from them. 3.x and 4.x are both acceptable. The vars must follow the line the **consuming** runtimes link (CPython `_ssl`, Ruby `openssl.so`), and a different major in one process is the failure this recipe exists to prevent.
 
-- Renovate cannot see that coupling. The controls are the consumers' own asserts (image-python checks that libpq's major matches CPython `_ssl`'s) and `fips-invariant-check`.
+- Renovate cannot see that coupling. The controls are the consuming images' own checks and `fips-invariant-check`.
 - Move the vars in the same change as the consuming base images' runtime move, and bump `epoch` if the PostgreSQL version doesn't change with them.
 - One recipe serves one line at a time. If two consumers need different lines at once, build a variant per line rather than moving the vars.
 
@@ -60,7 +60,7 @@ Renovate, configured in `renovate.json`, tracks two things:
   - PostgreSQL patch releases are mostly security fixes, so this dependency skips the repo-wide 7-day age gate and weekly schedule.
 - **The digest-pinned melange image** in `build.sh`.
 
-CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/` or `renovate.json`. It asserts that each melange `customManagers` regex matches its file exactly once, then runs `build.sh` (build and package tests) on amd64.
+CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/`, `renovate.json` or `.github/scripts/`. It tests and runs `.github/scripts/check-renovate-regex.js`, which requires every recipe to be covered by a regex customManager whose matchStrings each match exactly once. It then checks `build.sh`'s argument and out-dir guards and runs `build.sh` (build and package tests) on amd64.
 
 Merging a recipe change and tagging `melange-<recipe>/vN+1` lets each image-\* Renovate pick up the new tag.
 
@@ -71,5 +71,5 @@ Scanners match apk packages to advisories by package name against Wolfi's securi
 ## Running locally
 
 ```bash
-melange/build.sh melange/libpq-17.yaml amd64 /tmp/melange-out   # needs docker
+melange/build.sh melange/libpq-17.yaml amd64 "$(mktemp -d)"   # needs docker; a fresh out-dir each run
 ```

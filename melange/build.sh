@@ -9,6 +9,7 @@
 #
 # Usage: build.sh <recipe.yaml> <amd64|arm64> <out-dir>
 # Output: <out-dir>/<apk-arch>/{APKINDEX.tar.gz,*.apk} and <out-dir>/melange.rsa.pub
+# <out-dir>/<apk-arch> must be absent or empty: use a fresh out-dir per run.
 set -euo pipefail
 
 RECIPE="${1:?usage: build.sh <recipe.yaml> <amd64|arm64> <out-dir>}"
@@ -29,7 +30,7 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 # A reused out-dir would let a previous run's apks satisfy the checks below and reach the consumer.
 if [ -n "$(ls -A "$OUT/$APK_ARCH" 2>/dev/null)" ]; then
-  echo "::error::$OUT/$APK_ARCH is not empty; pass a fresh out-dir"; exit 1
+  echo "::error::$OUT/$APK_ARCH is not empty; remove it or use a fresh out-dir"; exit 1
 fi
 WORK="$(mktemp -d "${RUNNER_TEMP:-/tmp}/melange-ws.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -67,7 +68,15 @@ run_melange test "$RECIPE" \
   --runner docker \
   --workspace-dir "$WORK/test-ws" \
   --repository-append "$OUT" \
-  --keyring-append "$OUT/melange.rsa.pub"
+  --keyring-append "$OUT/melange.rsa.pub" 2>&1 | tee "$WORK/test.log"
+
+# Don't take melange's exit code alone as proof the tests ran: require one "running ... test
+# pipeline" line per test block in the recipe (top level at column 0, subpackages at 4 spaces).
+# A recipe laid out differently fails here loudly rather than passing unobserved.
+want="$(grep -cE '^(    )?test:' "$RECIPE" || true)"
+got="$(grep -cE 'running (the main test pipeline|test pipeline for subpackage )' "$WORK/test.log" || true)"
+echo "melange test ran $got of $want test blocks"
+[ "$got" = "$want" ] || { echo "::error::melange test ran $got test blocks, recipe has $want"; exit 1; }
 
 echo "melange packages for $APK_ARCH:"
 ls -1 "$OUT/$APK_ARCH"
