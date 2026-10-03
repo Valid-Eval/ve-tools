@@ -62,3 +62,21 @@ reviews:
       4. Record the decision in the ve-compliance record, then set 'due' here to the next review date (or remove this entry if closed)
     compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
     jira_ref: INF-382
+
+  - name: pdfminer-six-scoped-md5-exception-review
+    description: >-
+      Review the scoped FIPS exception (ve-compliance entry 2026-10-02-003) for the
+      pure-Python MD5 bound only to pdfminer.pdfdocument in proposal-analysis, used to
+      derive keys when reading legacy-encrypted (R2-R4) third-party PDFs.
+    due: "2026-12-31"
+    remind_days_before: 30
+    steps: |-
+      1. Check whether upstream pdfminer/pdfminer.six#1292 has removed the module-level `from hashlib import md5`
+      2. If it has and the fix is adopted, remove the module-local MD5 binding (VEP-2173) and record the exception as closed
+      3. Otherwise decide whether to renew the exception for a further fixed period
+      4. Record the outcome as a subsequent ve-compliance entry (if none exists by the due date, the exception has lapsed), then set 'due' here to the next review date or remove this entry
+    notes: |-
+      - Upstream: https://github.com/pdfminer/pdfminer.six/issues/1292
+      - The fleet fips-invariant-check cannot observe a pure-Python MD5; the scope control is enforced by VEP-2173's both-ways tests
+    compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
+    jira_ref: VEP-2173
