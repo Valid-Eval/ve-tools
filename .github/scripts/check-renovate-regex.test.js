@@ -157,3 +157,21 @@ test("no depName and no datasource fail", () => {
   assert.match(r.out, /no depName/);
   assert.match(r.out, /no datasource/);
 });
+
+test("every Renovate capture group is accepted, and captures stand in for templates", () => {
+  const { depNameTemplate, datasourceTemplate, ...bare } = MANAGER;
+  const ms = "(?<packageName>v)(?<datasource>a)(?<versioning>r)(?<registryUrl>s)(?<extractVersion>:)\\n(?<indentation>  )pg-tag: (?<currentValue>REL_17_\\d+)\\n  (?<depType>p)g-commit: (?<currentDigest>[0-9a-f]{40})";
+  const r = run({ managers: [{ ...bare, matchStrings: [ms] }] });
+  assert.strictEqual(r.code, 0, r.out);
+});
+
+test("a captured depName and a packageNameTemplate each satisfy the depName requirement", () => {
+  const { depNameTemplate, ...noDep } = MANAGER;
+  for (const mgr of [
+    { ...noDep, packageNameTemplate: "postgres/postgres" },
+    { ...noDep, matchStrings: [MANAGER.matchStrings[0].replace("pg-tag", "(?<depName>pg)-tag")] },
+  ]) {
+    const r = run({ managers: [mgr] });
+    assert.strictEqual(r.code, 0, r.out);
+  }
+});

@@ -73,9 +73,12 @@ jobs:
           expect_fail "cannot read" melange/check-tests-ran.sh melange/libpq-17.yaml "$RUNNER_TEMP/absent.log"
           # A failure after the EXIT trap is set must exit exactly 1 and leave no workspace behind:
           # a stub docker that exits 7 stands in for any mid-run failure.
-          mkdir -p "$RUNNER_TEMP/stub" && printf '#!/bin/sh\nexit 7\n' > "$RUNNER_TEMP/stub/docker"
+          # The stub records that it ran, so a build.sh that fails earlier (before the trap is set)
+          # can't satisfy this check by also exiting 1.
+          mkdir -p "$RUNNER_TEMP/stub" && printf '#!/bin/sh\ntouch "$0.called"\nexit 7\n' > "$RUNNER_TEMP/stub/docker"
           chmod +x "$RUNNER_TEMP/stub/docker"
           rc=0; PATH="$RUNNER_TEMP/stub:$PATH" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/trap-out" || rc=$?
+          [ -e "$RUNNER_TEMP/stub/docker.called" ] || { echo "::error::build.sh failed before reaching docker"; exit 1; }
           [ "$rc" = 1 ] || { echo "::error::build.sh exited $rc after a mid-run failure, expected 1"; exit 1; }
           if ls -d "$RUNNER_TEMP"/melange-ws.* 2>/dev/null; then echo "::error::build.sh left its workspace behind"; exit 1; fi
 

@@ -2,7 +2,9 @@
 //  - every regex customManager whose file pattern names the prefix targets at least one file;
 //  - it has matchStrings, and each matches each targeted file exactly once, yielding what Renovate
 //    needs: a non-empty currentValue, a depName and a datasource (captured or templated), and no
-//    capture group Renovate doesn't recognise (a renamed currentDigest is silently ignored);
+//    capture group outside Renovate's own field names (a renamed currentDigest is silently
+//    ignored). This is deliberately stricter than Renovate, which also allows helper groups used
+//    only in templates, currentValueTemplate, and digest-only deps; those fail here, loudly.
 //  - every recipe (*.yaml, *.yml) under the prefix is targeted by at least one regex customManager.
 // Renovate itself reports nothing when a manager stops matching (a renamed file, a typo'd
 // pattern, an edit that breaks the matchString): it just stops proposing updates.
@@ -40,7 +42,7 @@ function annotate(file, msg) {
   console.log(`::error${where}::${msg.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
 }
 
-// Capture groups Renovate's regex manager reads; any other name is dropped without a warning.
+// Renovate's regex-manager field names; a group with any other name never becomes a dep field.
 const KNOWN_GROUPS = new Set(["depName", "packageName", "currentValue", "currentDigest", "datasource",
   "versioning", "extractVersion", "registryUrl", "depType", "indentation"]);
 
