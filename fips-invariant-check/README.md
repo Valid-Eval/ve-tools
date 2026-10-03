@@ -16,20 +16,29 @@ Enforces the VE fleet's FIPS crypto invariant on a container image, from inside 
    - Go binaries using standard-library crypto with no FIPS mode.
 
    Go is the one sanctioned second module (decision 2026-10-02, INF-377), on exactly two routes (see the Go row below). A build-time check cannot see a runtime `GODEBUG=fips140=off` override, which switches FIPS mode off in a native-module binary, so deployment configuration must not set one.
-3. **Nothing skipped.** A gate that passes what it never inspected is worse than no gate. Any path the scan cannot inspect fails the run: an unreadable directory or file, an ELF it cannot parse, or a Go binary whose build info cannot be read. A missing `-root`, or one containing no ELF file at all, is an error (exit 2).
+3. **Nothing skipped.** A gate that passes what it never inspected is worse than no gate. Any path the scan cannot inspect fails the run:
+   - an unreadable directory or file, or an ELF it cannot parse;
+   - an unreadable dynamic table;
+   - a UPX-packed executable;
+   - a Go binary whose build info or function table cannot be read. Go is recognised by its sections or build-info magic, not only by `debug/buildinfo`, which reports damaged build info as "not a Go executable".
+
+   A missing `-root`, or one containing no ELF file at all, is an error (exit 2). Linked libraries are read from the program headers (`PT_DYNAMIC`, as the loader does) when section headers have been stripped. Files of any size are scanned in bounded chunks.
 
 ## How it decides
 
 | Finding | Evidence |
 |---|---|
-| A process can mix cores | Each ELF's `DT_NEEDED` `libcrypto.so.N` / `libssl.so.N`. The image fails if more than one major is linked. Cores that are present but unused are reported as notes. |
-| Embedded copy | The file **defines** `RAND_bytes`, `EVP_DigestInit_ex` or `OPENSSL_init_crypto`, or Heimdal's `hc_RAND_bytes` / `hc_EVP_DigestInit_ex` (any binding, `.symtab` or `.dynsym`). The system `libcrypto`/`libssl` and OpenSSL provider modules are exempt. Exact names only: CPython's `_ssl` defines a local `_ssl_RAND_bytes` wrapper and must pass. |
-| Embedded copy, stripped | A crypto-library version string **plus** that library's own source paths (`crypto/evp/…`, `third_party/boringssl/`), with no system OpenSSL linked. A version string alone is not evidence: git carries `OpenSSL 3.6.4` only as `--build-options` text. |
+| A process can mix cores | Each ELF's `DT_NEEDED` `libcrypto.so.N` / `libssl.so.N`, including OpenSSL 1.x's dotted `libcrypto.so.1.1`. The image fails if more than one major is linked. Cores that are present but unused are reported as notes. |
+| Embedded copy | The file **defines** `RAND_bytes`, `EVP_DigestInit_ex` or `OPENSSL_init_crypto`, or Heimdal's `hc_RAND_bytes` / `hc_EVP_DigestInit_ex` (any binding, `.symtab` or `.dynsym`). The system `libcrypto`/`libssl`, OpenSSL provider modules (`ossl-modules/`) and OpenSSL 3 engines (`engines-3/`) are exempt. Exact names only: CPython's `_ssl` defines a local `_ssl_RAND_bytes` wrapper and must pass. |
+| Embedded copy, stripped | A crypto-library version string **plus** that library's own source paths (`crypto/evp/…`, `third_party/boringssl/`), with no system OpenSSL linked, in a non-Go binary (Go binaries are judged by the Go row). A version string alone is not evidence: git carries `OpenSSL 3.6.4` only as `--build-options` text. |
 | Vendored library | A `libcrypto.so.N`/`libssl.so.N` outside the system lib dirs (`/lib`, `/lib64`, `/usr/lib`, `/usr/lib64`, and the multiarch `x86_64-linux-gnu` / `aarch64-linux-gnu` dirs), or an auditwheel-renamed `libcrypto-<hash>.so.N`. |
 | Independent crypto stack | Recognised by soname: Mozilla NSS (`libnss3`, `libssl3`, `libfreebl3` and the rest), Heimdal `libhcrypto`, libgcrypt, Nettle/hogweed, GnuTLS, Mbed TLS, wolfSSL. |
-| Go | The binary has crypto compiled in, and `debug/buildinfo` shows **neither** accepted route below. "Has crypto" means any function from a `crypto/...` package (including Go 1.24+'s `crypto/internal/fips140/`) or from `golang.org/x/crypto`. This is read from the binary's function table (`.gopclntab`, which stripping does not remove), not by searching its bytes, so text that merely mentions `crypto/` does not count. The routes: **(A) Chainguard native Go Cryptographic Module (CMVP #5247), DU go-fips ≥ 1.27:** `GOFIPS140` is a certified snapshot (`v1.0.0-<hash>`) **and** `DefaultGODEBUG` has `fips140=on` or `=only` **and** `chainguard_cryptographic_module=geomys` **and** `chainguard_entropy_source=geomys`. Upstream Go with `GOFIPS140=v1.0.0` fails: its entropy comes from outside the module boundary. `GOFIPS140=latest`/`inprocess` fail too: they build the unvalidated in-tree module. **(B) System OpenSSL, DU go-fips ≤ 1.26:** `-tags requirefips` **and** `GOEXPERIMENT=systemcrypto` **and** `CGO_ENABLED=1` (crypto via the system FIPS provider). It reports `GOFIPS140=latest`, so it is not judged by that. |
+| Go | The binary has crypto compiled in, and `debug/buildinfo` shows **neither** accepted route below. "Has crypto" means any function from a `crypto/...` package (including Go 1.24+'s `crypto/internal/fips140/`) or from `golang.org/x/crypto`. This is read from the binary's function table (`.gopclntab`, which stripping does not remove), not by searching its bytes, so text that merely mentions `crypto/` does not count. The routes: **(A) Chainguard native Go Cryptographic Module (CMVP #5247), DU go-fips ≥ 1.27:** `GOFIPS140` is a certified snapshot (`v1.0.0-<hash>`) **and** `DefaultGODEBUG` has `fips140=on` or `=only` **and** `chainguard_cryptographic_module=geomys` **and** `chainguard_entropy_source=geomys`. Upstream Go with `GOFIPS140=v1.0.0` fails: its entropy comes from outside the module boundary. `GOFIPS140=latest`/`inprocess` fail too: they build the unvalidated in-tree module. **(B) System OpenSSL, DU go-fips ≤ 1.26:** `-tags requirefips` **and** `GOEXPERIMENT=systemcrypto` **and** `CGO_ENABLED=1` (crypto via the system FIPS provider). It reports `GOFIPS140=latest`, so it is not judged by that. **Also:** a binary on either route still fails if it links a `golang.org/x/crypto` package that implements crypto itself (chacha20poly1305, argon2, ssh and the like), because that code runs outside both validated modules and FIPS mode does not govern it. Packages that only wrap the standard library (sha3, ed25519, hkdf) and the standard library's own vendored copy (`vendor/golang.org/x/crypto/...`, behind `crypto/tls`) do not count. |
 
-Structural checks cannot prove behaviour, so an image can also register a **behavioural probe**. The probe is a language-specific script that loads the runtime's own crypto first, then each native library, and asserts that MD5 is refused while SHA-256 and RAND work. Register it with `-- CMD ARGS` or `FIPS_INVARIANT_PROBE`; it runs only inside the image (`-root /`).
+Structural checks cannot prove behaviour, so an image can also register a **behavioural probe**. The probe is a language-specific script that loads the runtime's own crypto first, then each native library, and asserts that MD5 is refused while SHA-256 and RAND work.
+- **Registering it:** use `-- CMD ARGS` or `FIPS_INVARIANT_PROBE`.
+- **Where it runs:** only inside the image (`-root /`). An explicit `-- CMD` with any other `-root` is an error (exit 2). An inherited `FIPS_INVARIANT_PROBE` is only noted as not run.
+- **Time limit:** `FIPS_INVARIANT_PROBE_TIMEOUT`, default `10m`. A probe that fails to start, exits non-zero or times out fails the run.
 
 ## Use
 
@@ -50,12 +59,12 @@ To scan an extracted rootfs instead, run `fips-invariant-check -root /path/to/ro
 
 ## Exemptions
 
-Exemptions go in `/etc/fips-invariant-check/allow.d/*.allow` inside the image, or in a file passed with `-allow FILE`.
+Exemptions go in `/etc/fips-invariant-check/allow.d/*.allow` inside the image, or in a file passed with `-allow FILE`. When scanning an extracted rootfs, a symlinked `allow.d` is resolved inside the image, never on the host, and a dangling link is an error.
 
 - **Format:** one `<absolute-glob> <reason>` per line, matched with `path.Match`. A trailing `/**` means "anything under the matching directory", and that directory part may itself use globs. A pattern whose first path component is a glob (for example `/**` or `/*/bin/**`) would exempt the whole image and is rejected.
 - **An entry exempts a file from both rules.** It also takes the file out of the OpenSSL-core count. The core rule is deliberately image-wide, stricter than the per-process hazard, so a build tool that runs as its own process and links another core (e.g. a Rust toolchain built against OpenSSL 4) can be exempted by name.
 - **Every entry needs a reason.** It's printed every time the entry is used, so an exemption is always visible in the build log.
-- **Stale entries are flagged:** an entry that matches nothing produces a warning.
+- **Stale entries are flagged:** an entry that matches nothing produces a warning. Overlapping entries that match the same file both count as used.
 - **Production images run in strict mode.** Runtime bases set `FIPS_INVARIANT_STRICT=1` (or pass `-strict`), and every image built FROM them inherits it. In strict mode no exemption applies, and the presence of any allowlist file is itself a failure. An exemption copied out of a builder stage can therefore never open a hole in production.
 - **Use them only for things that never ship to production**, such as a builder-only toolchain. Exemptions live in the image, so a downstream image that discards the builder stage also discards its exemptions.
 

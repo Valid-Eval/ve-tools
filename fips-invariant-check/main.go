@@ -17,14 +17,15 @@
 // that does not exist or contains no ELF files) fails the run instead of being skipped.
 //
 // Structural checks cannot prove behaviour, so the image can also register a behavioural probe
-// (trailing `-- CMD ARGS`, or the FIPS_INVARIANT_PROBE env var) that this tool runs after the
-// scan: a language-specific script that loads the runtime's own crypto, then the native
+// (trailing `-- CMD ARGS`, or the FIPS_INVARIANT_PROBE env var; time limit
+// FIPS_INVARIANT_PROBE_TIMEOUT, default 10m) that this tool runs after the scan: a language-specific script that loads the runtime's own crypto, then the native
 // libraries, and asserts FIPS behaviour (MD5 refused, SHA-256 and RAND working).
 //
 // Exit status: 0 = invariant holds, 1 = violation, 2 = usage or internal error.
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,12 +33,18 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 const defaultAllowDir = "/etc/fips-invariant-check/allow.d"
+
+// inImageRoot is the -root that means "this tool is running inside the image being checked", the
+// only place a behavioural probe can run. A variable only so tests can exercise run()'s probe path.
+var inImageRoot = "/"
 
 type multiFlag []string
 
@@ -63,7 +70,7 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	strict := fl.Bool("strict", strictDefault,
 		"production mode: honour NO exemptions, and fail if any allowlist file is present (default from FIPS_INVARIANT_STRICT)")
 	var allowFiles multiFlag
-	fl.Var(&allowFiles, "allow", "extra allowlist file (repeatable); "+defaultAllowDir+"/*.allow inside -root is always read")
+	fl.Var(&allowFiles, "allow", "extra allowlist file (repeatable); "+defaultAllowDir+"/*.allow inside -root is always looked for (applied normally; its mere presence fails -strict)")
 	fl.Usage = func() {
 		fmt.Fprintf(errOut, "usage: fips-invariant-check [-root DIR] [-allow FILE]... [-strict] [-v] [-- PROBE CMD ARGS...]\n")
 		fl.PrintDefaults()
@@ -76,12 +83,22 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	if err != nil {
 		return fatal("%v", err)
 	}
+	// An explicitly requested probe that cannot run is an error, not a skipped check. One
+	// inherited through FIPS_INVARIANT_PROBE is only noted when scanning from outside the image.
+	probe := probeCommand(fl.Args(), getenv)
+	if len(fl.Args()) > 0 && rootAbs != inImageRoot {
+		return fatal("a probe given as -- CMD can only run inside the image (-root /); -root is %s", rootAbs)
+	}
+	probeTimeout, err := parseProbeTimeout(getenv("FIPS_INVARIANT_PROBE_TIMEOUT"))
+	if err != nil {
+		return fatal("%v", err)
+	}
 
 	// Allowlists live inside the scanned image, so a downstream image inherits its base's
 	// exemptions only if it keeps the base's files. Glob only fails on a malformed pattern, and a
 	// -root containing glob metacharacters would make it silently match nothing, so read the
 	// directory instead.
-	allowPaths, err := allowFilesIn(filepath.Join(rootAbs, defaultAllowDir))
+	allowPaths, err := allowFilesIn(rootAbs, defaultAllowDir)
 	if err != nil {
 		return fatal("%v", err)
 	}
@@ -114,18 +131,8 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 
 	failed := evaluate(out, in)
 
-	if probe := probeCommand(fl.Args(), getenv); len(probe) > 0 {
-		if rootAbs != "/" {
-			fmt.Fprintln(out, "note  behavioural probe skipped: it can only run inside the image (-root is not /)")
-		} else {
-			fmt.Fprintf(out, "=== behavioural probe: %s ===\n", strings.Join(probe, " "))
-			if err := runProbe(probe, out); err != nil {
-				failed = true
-				fmt.Fprintf(out, "FAIL  behavioural probe failed: %v\n", err)
-			} else {
-				fmt.Fprintln(out, "ok    behavioural probe passed")
-			}
-		}
+	if probeFailed := applyProbe(out, rootAbs, probe, probeTimeout); probeFailed {
+		failed = true
 	}
 
 	if failed {
@@ -136,9 +143,9 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	return 0
 }
 
-// parseStrictEnv reads FIPS_INVARIANT_STRICT. Anything it does not recognise is an error, not
-// "off": a templated "true" or "1 " silently selecting non-strict mode would apply exemptions in
-// exactly the production images strict mode protects.
+// parseStrictEnv reads FIPS_INVARIANT_STRICT. Anything it does not recognise ("enabled", "2") is
+// an error, not "off": silently selecting non-strict mode would apply exemptions in exactly the
+// production images strict mode protects.
 func parseStrictEnv(v string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "1", "true", "yes", "on":
@@ -170,21 +177,61 @@ func resolveRoot(root string) (string, error) {
 	return real, nil
 }
 
-func allowFilesIn(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
+// allowFilesIn lists the *.allow files in the in-image directory dir under root. A symlink is
+// resolved INSIDE the image (an absolute target is relative to root, not to the host), and a
+// dangling link is an error: from outside the image, following it on the host would read the
+// wrong directory, or silently find none.
+func allowFilesIn(root, dir string) ([]string, error) {
+	real, err := resolveInRoot(root, dir)
+	if err != nil {
+		return nil, err
+	}
+	if real == "" {
 		return nil, nil
 	}
+	entries, err := os.ReadDir(real)
 	if err != nil {
 		return nil, fmt.Errorf("reading allowlist directory %s: %v", dir, err)
 	}
 	var out []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".allow") {
-			out = append(out, filepath.Join(dir, e.Name()))
+			out = append(out, filepath.Join(real, e.Name()))
 		}
 	}
 	return out, nil
+}
+
+// resolveInRoot returns the host path of in-image path p under root, following symlinks with
+// root as "/". It returns "" when p does not exist.
+func resolveInRoot(root, p string) (string, error) {
+	cur := path.Clean(p)
+	for hops := 0; hops < 16; hops++ {
+		host := filepath.Join(root, filepath.FromSlash(cur))
+		st, err := os.Lstat(host)
+		if errors.Is(err, os.ErrNotExist) {
+			if hops == 0 {
+				return "", nil
+			}
+			return "", fmt.Errorf("allowlist directory %s is a dangling symlink (-> %s)", p, cur)
+		}
+		if err != nil {
+			return "", fmt.Errorf("allowlist directory %s: %v", p, err)
+		}
+		if st.Mode()&os.ModeSymlink == 0 {
+			return host, nil
+		}
+		target, err := os.Readlink(host)
+		if err != nil {
+			return "", fmt.Errorf("allowlist directory %s: %v", p, err)
+		}
+		if path.IsAbs(target) {
+			cur = path.Clean(target)
+		} else {
+			cur = path.Clean(path.Join(path.Dir(cur), target))
+		}
+	}
+	return "", fmt.Errorf("allowlist directory %s: too many symlinks", p)
 }
 
 type evalInput struct {
@@ -199,6 +246,11 @@ type evalInput struct {
 // evaluate applies both rules to the scan results, writes the report, and returns whether the
 // invariant is violated. It does no I/O beyond writing to out, so it is unit-tested directly.
 func evaluate(out io.Writer, in evalInput) (failed bool) {
+	// Strict mode applies no exemptions whatever the input carries (run() also never loads them).
+	allow := in.allow
+	if in.strict {
+		allow = nil
+	}
 	if in.strict {
 		fmt.Fprintln(out, "=== fips-invariant-check (strict: no exemptions) ===")
 		if len(in.strictAllowFiles) > 0 {
@@ -226,15 +278,16 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 			present[major] = append(present[major], r.Path)
 			continue
 		}
-		if len(r.NeededCores) > 0 {
-			// An exemption also takes a file out of the core count. The rule is deliberately
-			// image-wide (stricter than the per-process hazard), so a build tool that runs as its
-			// own process and never loads the application's libraries (e.g. a toolchain linking
-			// another core) is exempted by name, with its reason printed.
-			if e := findAllow(in.allow, r.Path); e != nil {
-				coreAllowed = append(coreAllowed, fmt.Sprintf("ALLOWED %s links %s\n        exemption (%s): %s", r.Path, strings.Join(r.NeededCores, ", "), e.source, e.reason))
-				continue
-			}
+		if len(r.NeededCores) == 0 {
+			continue
+		}
+		// An exemption also takes a file out of the core count. The rule is deliberately image-wide
+		// (stricter than the per-process hazard), so a build tool that runs as its own process and
+		// never loads the application's libraries (e.g. a toolchain linking another core) is
+		// exempted by name, with its reason printed.
+		if e := findAllow(allow, r.Path); e != nil {
+			coreAllowed = append(coreAllowed, fmt.Sprintf("ALLOWED %s links %s\n        exemption (%s): %s", r.Path, strings.Join(r.NeededCores, ", "), e.source, e.reason))
+			continue
 		}
 		for _, n := range r.NeededCores {
 			major := coreSoname.FindStringSubmatch(n)[2]
@@ -283,7 +336,7 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 			}
 			continue
 		}
-		if e := findAllow(in.allow, r.Path); e != nil {
+		if e := findAllow(allow, r.Path); e != nil {
 			allowed = append(allowed, fmt.Sprintf("ALLOWED %s: %s\n        exemption (%s): %s", r.Path, reason, e.source, e.reason))
 			continue
 		}
@@ -301,7 +354,7 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	for _, a := range allowed {
 		fmt.Fprintf(out, "      %s\n", a)
 	}
-	for _, e := range in.allow {
+	for _, e := range allow {
 		if !e.used {
 			fmt.Fprintf(out, "warn  allowlist entry matched nothing, remove it if stale: %s (%s)\n", e.pattern, e.source)
 		}
@@ -317,11 +370,50 @@ func probeCommand(args []string, getenv func(string) string) []string {
 	return strings.Fields(getenv("FIPS_INVARIANT_PROBE"))
 }
 
-// runProbe runs the image's behavioural probe; any failure to start or a non-zero exit fails.
-func runProbe(probe []string, out io.Writer) error {
-	cmd := exec.Command(probe[0], probe[1:]...)
+// applyProbe runs the probe when the scan is of this image (-root /) and reports whether it
+// failed. From outside the image an (inherited) probe can only be noted as not run.
+func applyProbe(out io.Writer, rootAbs string, probe []string, timeout time.Duration) (failed bool) {
+	if len(probe) == 0 {
+		return false
+	}
+	if rootAbs != inImageRoot {
+		fmt.Fprintln(out, "note  behavioural probe not run: it can only run inside the image (-root is not /)")
+		return false
+	}
+	fmt.Fprintf(out, "=== behavioural probe: %s ===\n", strings.Join(probe, " "))
+	if err := runProbe(probe, out, timeout); err != nil {
+		fmt.Fprintf(out, "FAIL  behavioural probe failed: %v\n", err)
+		return true
+	}
+	fmt.Fprintln(out, "ok    behavioural probe passed")
+	return false
+}
+
+const defaultProbeTimeout = 10 * time.Minute
+
+func parseProbeTimeout(v string) (time.Duration, error) {
+	if strings.TrimSpace(v) == "" {
+		return defaultProbeTimeout, nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("FIPS_INVARIANT_PROBE_TIMEOUT=%q is not a positive duration (e.g. 10m)", v)
+	}
+	return d, nil
+}
+
+// runProbe runs the image's behavioural probe. Failure to start, a non-zero exit, or running past
+// the timeout all fail: a hung probe must not hang the image build.
+func runProbe(probe []string, out io.Writer, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, probe[0], probe[1:]...)
 	cmd.Stdout, cmd.Stderr = out, out
-	return cmd.Run()
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("timed out after %s", timeout)
+	}
+	return err
 }
 
 // imagePath maps a host path under root to the path it has inside the image.

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func evalOut(t *testing.T, in evalInput) (bool, string) {
@@ -101,43 +102,32 @@ func TestProbe(t *testing.T) {
 		t.Errorf("trailing args should win over FIPS_INVARIANT_PROBE, got %v", got)
 	}
 	if runtime.GOOS == "windows" {
-		t.Skip("true/false commands")
+		t.Skip("true/false/sleep commands")
 	}
 	var b bytes.Buffer
-	if err := runProbe([]string{"true"}, &b); err != nil {
-		t.Errorf("a passing probe must not error: %v", err)
+	if failed := applyProbe(&b, "/", []string{"true"}, time.Minute); failed {
+		t.Errorf("a passing probe must not fail the run:\n%s", b.String())
 	}
-	if err := runProbe([]string{"false"}, &b); err == nil {
+	if failed := applyProbe(&b, "/", []string{"false"}, time.Minute); !failed {
 		t.Error("a probe that exits non-zero must fail the run")
 	}
-	if err := runProbe([]string{"/nonexistent/probe"}, &b); err == nil {
+	if failed := applyProbe(&b, "/", []string{"/nonexistent/probe"}, time.Minute); !failed {
 		t.Error("a probe that cannot start must fail the run")
 	}
-}
-
-// End-to-end through run(): these need a real ELF file to scan, so they run on Linux, where the
-// test binary itself is one.
-func linuxRoot(t *testing.T) string {
-	t.Helper()
-	if runtime.GOOS != "linux" {
-		t.Skip("needs an ELF test binary (Linux)")
+	b.Reset()
+	if failed := applyProbe(&b, "/", []string{"sleep", "5"}, 200*time.Millisecond); !failed || !strings.Contains(b.String(), "timed out") {
+		t.Errorf("a probe running past its timeout must fail the run:\n%s", b.String())
 	}
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
+	b.Reset()
+	if failed := applyProbe(&b, "/some/rootfs", []string{"false"}, time.Minute); failed || !strings.Contains(b.String(), "not run") {
+		t.Errorf("from outside the image an inherited probe is noted, not run:\n%s", b.String())
 	}
-	data, err := os.ReadFile(self)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := parseProbeTimeout("soon"); err == nil {
+		t.Error("an invalid FIPS_INVARIANT_PROBE_TIMEOUT must be an error")
 	}
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "usr/bin"), 0o755); err != nil {
-		t.Fatal(err)
+	if d, err := parseProbeTimeout(""); err != nil || d != defaultProbeTimeout {
+		t.Errorf("default probe timeout: got %v %v", d, err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "usr/bin/tool"), data, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return root
 }
 
 func runWith(t *testing.T, env map[string]string, args ...string) (int, string) {
@@ -160,7 +150,7 @@ func TestRunRootErrors(t *testing.T) {
 }
 
 func TestRunStrictAndAllowFiles(t *testing.T) {
-	root := linuxRoot(t)
+	root := fixtureRoot(t)
 	dir := filepath.Join(root, "etc/fips-invariant-check/allow.d")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -183,7 +173,7 @@ func TestRunStrictAndAllowFiles(t *testing.T) {
 }
 
 func TestRunUnreadableDirFails(t *testing.T) {
-	root := linuxRoot(t)
+	root := fixtureRoot(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root can read everything")
 	}

@@ -9,7 +9,8 @@ import (
 	"testing"
 )
 
-// Each case is a real file the fleet scan met on 2026-10-02, reduced to what the classifier sees.
+// Cases are real fleet findings from 2026-10-02, reduced to what the classifier sees, or boundary
+// cases for the classifier's branches.
 func TestEmbeddedReason(t *testing.T) {
 	cases := []struct {
 		name string
@@ -76,7 +77,8 @@ func TestGoFIPSMode(t *testing.T) {
 		}
 		return bi
 	}
-	// Real `go version -m` settings, 2026-10-02 (jacob-82's probes and a local go1.27.1 build).
+	// Real `go version -m` settings (2026-10-02) from DU go-fips 1.27.0 / 1.26.8.1 and upstream
+	// GOFIPS140=v1.0.0 builds.
 	cg127 := []string{"chainguard_go_package", "go-geomys-1.27-1.27.0-r1", "chainguard_cryptographic_module", "geomys",
 		"chainguard_entropy_source", "geomys", "-tags", "fips140v1.0",
 		"DefaultGODEBUG", "fips140=on,tracebacklabels=0,x509sslcertoverrideplatform=0", "CGO_ENABLED", "0", "GOFIPS140", "v1.0.0-c2097c7c"}
