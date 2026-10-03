@@ -9,7 +9,8 @@
 #   1. Record the outcome in the record compliance_ref points to (e.g. the ve-compliance
 #      entry, or its PR until that merges)
 #   2. Set 'due' below to the next review date (this is how a review recurs), or
-#      remove the entry if no further review is needed
+#      remove the entry if no further review is needed. Once the record merges, repoint
+#      compliance_ref from its PR to the merged record
 #   3. Commit and push the change
 #   4. Close the corresponding GitHub issue and Jira ticket
 #
@@ -20,8 +21,9 @@
 #   remind_days_before: 15        — days before the due date to start reminding
 #   jira_priority: High           — Jira ticket priority
 #   notes: (none)                 — additional context shown in the GitHub issue and email
-# An empty list (reviews: []) or a missing file is fine: no reviews are scheduled, and
-# credential reminders are unaffected.
+# A missing file, an empty or comments-only file, or an empty list (reviews: []) is fine:
+# no reviews are scheduled and credential reminders are unaffected. email_to, email_from and
+# jira_project are required whenever any review is listed.
 
 email_to: tools@valideval.com
 email_from: tools@valideval.com
@@ -42,7 +44,7 @@ reviews:
       4. Record the outcome on INF-382 and in the ve-compliance record
     notes: |-
       - Even with all three gates done, Chromium, chromedriver and NSS remain embedded crypto, so the exception stays unless image-browser changes
-      - The browser base image's Node has no fips.so (tracked against image-browser)
+      - The browser base image's Node has no fips.so
     compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
     jira_ref: INF-382
 
