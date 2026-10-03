@@ -1,0 +1,43 @@
+name: fips-invariant-check
+
+# The check gates every VE image build, so its own tests gate every change to it.
+on:
+  pull_request:
+    paths:
+      - "fips-invariant-check/**"
+      - ".github/workflows/fips-invariant-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "fips-invariant-check/**"
+      - ".github/workflows/fips-invariant-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The module's floor and a current toolchain: Go binary layouts differ between them (the
+        # function table of a Go 1.24 PIE/c-shared/plugin build has no section of its own).
+        go: ["1.24", "1.26"]
+    defaults:
+      run:
+        working-directory: fips-invariant-check
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::run gofmt -w"; exit 1; }
+      - run: go vet ./...
+      - name: Vets for other hosts (scanning an extracted rootfs off Linux is supported)
+        run: for os in windows darwin; do GOOS=$os go vet ./... || exit 1; done
+      - run: go test -count=1 ./...
+      - name: Builds as the static binary the images install
+        run: CGO_ENABLED=0 go build -trimpath -o /tmp/fips-invariant-check . && file /tmp/fips-invariant-check | grep -q 'statically linked'
