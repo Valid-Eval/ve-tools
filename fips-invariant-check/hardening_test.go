@@ -890,3 +890,85 @@ func TestAnalyzeStrippedAwsLcMarker(t *testing.T) {
 		t.Fatal("a non-Go binary carrying aws-lc's source paths and no system core must fail")
 	}
 }
+
+// The scanner never skips files it was not asked to: a missing self path (os.Executable failed)
+// skips nothing, and a given one skips only that file.
+func TestScanSelfSkip(t *testing.T) {
+	root := fixtureRoot(t)
+	tool := filepath.Join(root, "usr/bin/tool")
+	if reports, _, err := scan(root, ""); err != nil || len(reports) != 1 {
+		t.Fatalf("with no self path every file is analysed, got %d reports, %v", len(reports), err)
+	}
+	data, _ := os.ReadFile(goFixture(t, "crypto"))
+	other := filepath.Join(root, "usr/bin/fips-invariant-check")
+	os.WriteFile(other, data, 0o755)
+	reports, _, err := scan(root, other)
+	if err != nil || len(reports) != 1 || reports[0].Path != "/usr/bin/tool" {
+		t.Fatalf("only the running binary itself is skipped, got %+v %v", reports, err)
+	}
+	_ = tool
+}
+
+// Invalid settings are usage errors, never silently ignored (an ignored FIPS_INVARIANT_STRICT
+// would turn strict mode off).
+func TestRunInvalidEnvIsUsageError(t *testing.T) {
+	root := fixtureRoot(t)
+	for k, v := range map[string]string{"FIPS_INVARIANT_STRICT": "maybe", "FIPS_INVARIANT_PROBE_TIMEOUT": "soon"} {
+		if code, out := runWith(t, map[string]string{k: v}, "-root", root); code != 2 {
+			t.Errorf("%s=%s must be exit 2, got %d:\n%s", k, v, code, out)
+		}
+	}
+}
+
+// A system core that is present but unused is a note, even though its own libssl links its
+// libcrypto (DU's FIPS bases keep OpenSSL 4 installed as a dependency of libcrypto3).
+func TestEvaluateUnusedCoreOwnLinksDoNotCount(t *testing.T) {
+	ssl4 := &fileReport{Path: "/usr/lib/libssl.so.4", Soname: "libssl.so.4", NeededCores: []string{"libcrypto.so.4"}, Defines: []string{"RAND_bytes"}}
+	crypto4 := &fileReport{Path: "/usr/lib/libcrypto.so.4", Soname: "libcrypto.so.4", Defines: []string{"RAND_bytes"}}
+	ssl3 := &fileReport{Path: "/usr/lib/libssl.so.3", Soname: "libssl.so.3", NeededCores: []string{"libcrypto.so.3"}}
+	app := &fileReport{Path: "/usr/bin/app", NeededCores: []string{"libssl.so.3", "libcrypto.so.3"}}
+	failed, out := evalOut(t, evalInput{reports: []*fileReport{ssl4, crypto4, ssl3, app}})
+	if failed || !strings.Contains(out, "present but nothing links it") {
+		t.Fatalf("an unused system core (and its own libssl) must only be noted:\n%s", out)
+	}
+}
+
+// Source paths alone, without a crypto-library marker, are not an embedded copy.
+func TestAnalyzeSourcePathsWithoutMarker(t *testing.T) {
+	_, withoutCrypto := goFixtures(t)
+	paths := copyWith(t, withoutCrypto, func(d []byte) []byte {
+		return append(d, []byte("\x00src/crypto/evp/digest.c\x00")...)
+	})
+	r, err := analyze(paths, "/usr/bin/app")
+	if err != nil || r == nil || r.HasSource {
+		t.Fatalf("source paths without a marker must not set HasSource, got %v %+v", err, r)
+	}
+}
+
+// "UPX!" inside the header window of a file that keeps ordinary (non-UPX) sections is not packing.
+func TestAnalyzeUPXTextInHeaderWindow(t *testing.T) {
+	_, nocrypto := goFixtures(t)
+	text := copyWith(t, nocrypto, func(d []byte) []byte { copy(d[0x800:], "UPX!"); return d })
+	if _, err := analyze(text, "/usr/bin/app"); err != nil {
+		t.Fatalf("UPX text with ordinary sections is not a packed file, got %v", err)
+	}
+}
+
+// "/dir/**" exempts what is under dir, not dir itself or a shorter path.
+func TestAllowDoubleStarBoundary(t *testing.T) {
+	e := &allowEntry{pattern: "/opt/x/**"}
+	if !e.matches("/opt/x/lib/a.so") {
+		t.Error("/opt/x/** must match a file below /opt/x")
+	}
+	for _, p := range []string{"/opt/x", "/opt"} {
+		if e.matches(p) {
+			t.Errorf("/opt/x/** must not match %s", p)
+		}
+	}
+}
+
+func TestVersionWithoutVPrefix(t *testing.T) {
+	if versionAtLeast("0.57.0", "v0.51.0") {
+		t.Error("a module version without its v prefix is not a valid version")
+	}
+}

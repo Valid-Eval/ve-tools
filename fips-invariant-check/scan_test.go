@@ -116,6 +116,7 @@ func TestGoFIPSMode(t *testing.T) {
 		{"systemcrypto without CGO", with(cg126, "CGO_ENABLED", "0"), false},
 		// Whole items only: Go disables an experiment with a "no" prefix.
 		{"GOEXPERIMENT=nosystemcrypto", with(cg126, "GOEXPERIMENT", "nosystemcrypto"), false},
+		{"upstream v1.0.0 even with chainguard markers", with(cg127, "GOFIPS140", "v1.0.0"), false},
 		{"-tags norequirefips", with(cg126, "-tags", "norequirefips"), false},
 		{"requirefips without systemcrypto", with(cg126, "GOEXPERIMENT", ""), false},
 		{"plain golang (comment-dedup today)", []string{"CGO_ENABLED", "0"}, false},

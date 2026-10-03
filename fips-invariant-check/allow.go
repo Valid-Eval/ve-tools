@@ -82,7 +82,7 @@ func (e *allowEntry) matches(p string) bool {
 		// the same prefix (/opt/a vs /opt/ab) does not.
 		want := strings.Split(dir, "/")
 		got := strings.Split(p, "/")
-		if len(got) < len(want) {
+		if len(got) <= len(want) { // something UNDER dir: dir itself (or a shorter path) is not
 			return false
 		}
 		for i, w := range want {
