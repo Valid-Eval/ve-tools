@@ -77,6 +77,6 @@ reviews:
       4. Record the outcome as a subsequent ve-compliance entry (if none exists by the due date, the exception has lapsed), then set 'due' here to the next review date or remove this entry
     notes: |-
       - Upstream: https://github.com/pdfminer/pdfminer.six/issues/1292
-      - The fleet fips-invariant-check cannot observe a pure-Python MD5; the scope control is enforced by VEP-2173's both-ways tests
+      - The fleet fips-invariant-check cannot observe a pure-Python MD5, so this reminder is the exception's only automated prompt; the scope control itself is enforced by VEP-2173's both-ways tests
     compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
     jira_ref: VEP-2173
