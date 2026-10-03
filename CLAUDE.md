@@ -29,6 +29,7 @@ cd credbridge && go build -o ../build/credbridge .
 - `.github/workflows/credential-rotation-reminder.yml` — Daily credential expiry checks → GH issues + Jira + email
 - `.github/credential-rotations.yml` — Credential inventory with expiry dates and rotation steps
 - `scratch/` — Gitignored working directory for local experiments
+- `melange/` — Shared source-built apks for the image fleet (`libpq-17.yaml`: libpq and the pg client tools linked against the consuming runtime's single OpenSSL core for the FIPS single-core invariant, plus a -dev package that brings the matching OpenSSL headers) + `build.sh`; CI in `.github/workflows/melange.yml` (+ `.github/scripts/check-renovate-regex.js`). image-* CIs build them from a pinned `melange-<recipe>/vN` tag; nothing is published. See `melange/README.md`.
 
 ### Compliance Operating System
 Compliance data lives in the dedicated [ve-compliance](https://github.com/Valid-Eval/ve-compliance) repo.

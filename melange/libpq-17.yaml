@@ -1,0 +1,276 @@
+# PostgreSQL client library (libpq) built from source against the image's own FIPS OpenSSL core.
+#
+# Why this exists: Wolfi's libpq-17 moved to OpenSSL 4 (17.11-r4) while CPython's _ssl/_hashlib use
+# OpenSSL 3. Two OpenSSL cores in one process cannot both initialise the single Chainguard FIPS
+# provider (fips.so), so every Python service failed to connect ("could not generate nonce").
+# Building libpq here pins it to the same core as the interpreter. The fleet invariant check
+# (fips-invariant-check) fails the image build if the two ever diverge again.
+#
+# Lives in ve-tools so every image that needs libpq builds the SAME recipe (image-python,
+# image-ruby): each image-* CI checks out ve-tools at a pinned tag (`melange-libpq-17/vN`), runs
+# melange/build.sh into its own Docker build context, and installs the apks. No artifact is
+# published; each build signs with a throwaway per-run key.
+#
+# Built with melange so the result is a real, signed apk: scanners (Trivy/Grype) see its name and
+# version like any other package, and apk refuses to co-install it with Wolfi's libpq-17 (same
+# /usr/lib/libpq.so.5), so a stray `apk add libpq-17` fails loudly instead of shadowing it.
+#
+# GSSAPI/LDAP/ICU/readline are disabled: nothing in the fleet authenticates to Postgres via
+# Kerberos or LDAP (verified 2026-10-02), and dropping them removes the krb5/ldap/sasl closure.
+# (Wolfi's postgresql-17-client pulls that closure in, and with it a second OpenSSL core in the same
+# process: libk5crypto links libcrypto.so.3 while its libpq links .so.4.)
+#
+# zlib is ENABLED, for the client tools only: `pg_dump -Fc` gzip-compresses custom-format archives
+# by default, and a pg_restore built without zlib cannot read them. libpq itself does not link zlib
+# in PostgreSQL 17; the package test below asserts that, so libpq's closure stays libc + OpenSSL.
+#
+vars:
+  # OpenSSL line (3.x or 4.x) of the CONSUMING images' runtimes (CPython _ssl, Ruby openssl.so). It
+  # must follow them: a different major is two cores in one process. Renovate cannot see that
+  # coupling, so the controls are this comment, the consuming images' own checks and
+  # fips-invariant-check. ONE edit point: the build env's -dev
+  # package, the -dev subpackage's dependency, the header check and every linkage assertion below
+  # derive from these two. A single recipe serves one line at a time: if two consumers ever need
+  # different cores at once, build a variant per line instead of moving these. Bump `epoch` when
+  # changing them without a PostgreSQL version change, so the two builds don't share a version.
+  openssl-major: "3"
+  openssl-minor: "6"
+  # renovate: postgres/postgres -- tag, commit and package version move together. Keep pg-tag,
+  # pg-commit, `package:` and `version:` contiguous and in this order: Renovate's regex matches the
+  # four lines as one block, and silently stops proposing updates if anything is inserted between.
+  pg-tag: REL_17_11
+  pg-commit: 083ac033419f690758508e08c1736089384bbee8
+package:
+  version: "17.11"
+  name: ve-libpq-17
+  epoch: 0
+  description: "PostgreSQL 17 client library (libpq) built against the image's FIPS OpenSSL ${{vars.openssl-major}} core"
+  copyright:
+    - license: PostgreSQL
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - build-base
+      - busybox
+      - ca-certificates-bundle
+      # OpenSSL line for the build env. It must match the consuming images' runtimes at BOTH levels:
+      #  - MAJOR (.so.3 vs .so.4): a mismatch is two OpenSSL cores in one process, and
+      #    fips-invariant-check's linkage scan fails the image.
+      #  - MINOR (e.g. 3.6 vs 3.7): same soname, so the linkage scan PASSES; libpq would reference
+      #    newer versioned symbols (OPENSSL_3.7.0) and fail only when loaded.
+      # Wolfi's openssl-3.6-dev is an empty meta package whose headers come from openssl-dev; whether
+      # it holds openssl-dev to the same minor depends on the revision (as of 2026-10 it does; 3.6.5-r0
+      # and earlier did not). openssl-4.0-dev carries its own headers. Because that pin is Wolfi's
+      # packaging and not ours, the first pipeline step asserts the header version, and the package
+      # tests assert that no OPENSSL_x.y symbol version outside the vars' line is needed.
+      # Not pinned to a PATCH version, unlike the image-side header install: melange builds in a
+      # throwaway Wolfi env, so nothing here can upgrade a base image's packages, and OpenSSL adds
+      # no symbols in patch releases.
+      # When Wolfi drops this line's -dev package, melange fails to resolve it (loud, not silent).
+      - openssl-${{vars.openssl-major}}.${{vars.openssl-minor}}-dev
+      - perl
+      - bison
+      - flex
+      - zlib-dev
+
+pipeline:
+  # Fail before compiling if the headers are not the OpenSSL line the vars name.
+  - runs: |
+      h=/usr/include/openssl/opensslv.h
+      major="$(sed -n 's/^# *define OPENSSL_VERSION_MAJOR *\([0-9]*\).*/\1/p' "$h")"
+      minor="$(sed -n 's/^# *define OPENSSL_VERSION_MINOR *\([0-9]*\).*/\1/p' "$h")"
+      hv="$major.$minor"
+      echo "OpenSSL headers: $hv"
+      [ "$hv" = "${{vars.openssl-major}}.${{vars.openssl-minor}}" ] || {
+        echo "FAIL: OpenSSL headers are $hv, recipe vars say ${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1; }
+
+  - uses: git-checkout
+    with:
+      repository: https://github.com/postgres/postgres
+      tag: ${{vars.pg-tag}}
+      expected-commit: ${{vars.pg-commit}}
+
+  - runs: |
+      ./configure \
+        --prefix=/usr \
+        --with-openssl \
+        --without-icu \
+        --without-readline \
+        --with-zlib \
+        --without-gssapi \
+        --without-ldap
+
+  - runs: |
+      make -C src/interfaces/libpq -j$(nproc)
+      make -C src/interfaces/libpq install DESTDIR="${{targets.destdir}}"
+      make -C src/include install DESTDIR="${{targets.destdir}}"
+      make -C src/bin/pg_config install DESTDIR="${{targets.destdir}}"
+      # Client library only: drop the server catalog files src/include's install brings along.
+      rm -rf "${{targets.destdir}}"/usr/share/postgresql/postgres.bki "${{targets.destdir}}"/usr/share/postgresql/system_constraints.sql
+      # Static archive is not shipped: consumers link the shared library.
+      rm -f "${{targets.destdir}}"/usr/lib/libpq.a "${{targets.destdir}}"/usr/lib/libpgport*.a "${{targets.destdir}}"/usr/lib/libpgcommon*.a
+
+  # Client tools for ve-postgresql-17-client: only the four the fleet runs (ve-app's backend e2e
+  # flow and dev image: pg_dump, pg_restore, psql, pg_isready). The Makefiles build libpgport,
+  # libpgcommon and libpgfeutils as submakes and link them statically, so libpq is the only shared
+  # PostgreSQL library the tools need (pg_dump/pg_restore also link libcrypto and libz directly).
+  - runs: |
+      make -C src/bin/pg_dump -j$(nproc)
+      make -C src/bin/psql -j$(nproc)
+      make -C src/bin/scripts pg_isready -j$(nproc)
+      for b in src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore src/bin/psql/psql src/bin/scripts/pg_isready; do
+        install -Dm755 "$b" "${{targets.destdir}}/usr/bin/$(basename "$b")"
+      done
+
+  - uses: strip
+
+# Checked on the INSTALLED package, so a configure or toolchain change that drags another library
+# into libpq's closure (zlib, krb5, a second OpenSSL major) fails build.sh here (via `melange test`),
+# not in an image.
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - binutils
+        - busybox
+  pipeline:
+    - runs: |
+        # The dynamic loader is listed on some arches (aarch64 glibc) and not others; it isn't a dependency
+        # anyone chooses, so it is the one entry ignored.
+        needed="$(readelf -d /usr/lib/libpq.so.5 | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | grep -v '^ld-linux-' | sort | tr '\n' ' ')"
+        echo "libpq.so.5 NEEDED: $needed"
+        [ "$needed" = "libc.so.6 libcrypto.so.${{vars.openssl-major}} libm.so.6 libssl.so.${{vars.openssl-major}} " ] || {
+          echo "FAIL: libpq.so.5 must link exactly libc, libm, libssl.so.${{vars.openssl-major}} and libcrypto.so.${{vars.openssl-major}}" >&2; exit 1; }
+        # Same soname does not mean same minor: libpq built against newer headers needs newer
+        # versioned symbols and fails only when loaded on the runtime's older library.
+        vers="$(readelf -W -V /usr/lib/libpq.so.5 | sed -n 's/.*Name: OPENSSL_\([0-9][0-9.]*\).*/\1/p' | sort -u | tr '\n' ' ')"
+        echo "libpq.so.5 OpenSSL symbol versions: $vers"
+        [ -n "$vers" ] || { echo "FAIL: libpq.so.5 references no OPENSSL_* symbol versions" >&2; exit 1; }
+        for v in $vers; do
+          maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
+          # A non-numeric minor would make -gt error out and take the pass branch; refuse it.
+          case "$min" in ''|*[!0-9]*) echo "FAIL: cannot parse OPENSSL_$v" >&2; exit 1 ;; esac
+          if [ "$maj" != "${{vars.openssl-major}}" ] || [ "$min" -gt "${{vars.openssl-minor}}" ]; then
+            echo "FAIL: libpq.so.5 needs OPENSSL_$v, outside OpenSSL ${{vars.openssl-major}}.0-${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1
+          fi
+        done
+
+subpackages:
+  - name: ve-libpq-17-dev
+    description: "Headers, pg_config and the unversioned libpq.so link for building against ve-libpq-17"
+    pipeline:
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}"/usr/lib "${{targets.subpkgdir}}"/usr/bin
+          mv "${{targets.destdir}}"/usr/include "${{targets.subpkgdir}}"/usr/
+          mv "${{targets.destdir}}"/usr/bin/pg_config "${{targets.subpkgdir}}"/usr/bin/
+          mv "${{targets.destdir}}"/usr/lib/libpq.so "${{targets.subpkgdir}}"/usr/lib/
+          mv "${{targets.destdir}}"/usr/lib/pkgconfig "${{targets.subpkgdir}}"/usr/lib/
+    dependencies:
+      runtime:
+        - ve-libpq-17
+        # libpq.pc requires libssl/libcrypto, and both OpenSSL lines' -dev packages provide
+        # pc:libssl/pc:libcrypto. Without this, a fresh `apk add ve-libpq-17-dev` picks
+        # openssl-4.0-dev headers next to a 3.x libpq, and anything compiled afterwards against
+        # -lcrypto links the other core.
+        - openssl-${{vars.openssl-major}}.${{vars.openssl-minor}}-dev
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - busybox
+      pipeline:
+        - runs: |
+            for f in /usr/include/libpq-fe.h /usr/lib/libpq.so /usr/lib/pkgconfig/libpq.pc; do
+              [ -e "$f" ] || { echo "FAIL: ve-libpq-17-dev is missing $f" >&2; exit 1; }
+            done
+            pg_config --version || { echo "FAIL: pg_config does not run" >&2; exit 1; }
+            # The dependency above must bring THIS line's OpenSSL headers, not another line's.
+            h=/usr/include/openssl/opensslv.h
+            major="$(sed -n 's/^# *define OPENSSL_VERSION_MAJOR *\([0-9]*\).*/\1/p' "$h")"
+            minor="$(sed -n 's/^# *define OPENSSL_VERSION_MINOR *\([0-9]*\).*/\1/p' "$h")"
+            hv="$major.$minor"
+            echo "OpenSSL headers installed with ve-libpq-17-dev: $hv"
+            [ "$hv" = "${{vars.openssl-major}}.${{vars.openssl-minor}}" ] || {
+              echo "FAIL: ve-libpq-17-dev brought OpenSSL $hv headers, expected ${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1; }
+
+  - name: ve-postgresql-17-client
+    description: "pg_dump, pg_restore, psql and pg_isready linked against ve-libpq-17 (OpenSSL ${{vars.openssl-major}}), with zlib for compressed archives"
+    pipeline:
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}"/usr/bin
+          for b in pg_dump pg_restore psql pg_isready; do
+            mv "${{targets.destdir}}/usr/bin/$b" "${{targets.subpkgdir}}"/usr/bin/
+          done
+    dependencies:
+      runtime:
+        - ve-libpq-17
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - binutils
+            - busybox
+      pipeline:
+        - runs: |
+            for b in pg_dump pg_restore psql pg_isready; do
+              "$b" --version || { echo "FAIL: $b does not run" >&2; exit 1; }
+              needed="$(readelf -d "/usr/bin/$b" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')"
+              echo "$b NEEDED: $(echo $needed)"
+              echo "$needed" | grep -q '^libpq\.so\.5$' || { echo "FAIL: $b does not link libpq.so.5" >&2; exit 1; }
+              # Judge the RESOLVED closure, not the tool's own NEEDED. pg_dump/pg_restore link
+              # libcrypto directly (PostgreSQL's static libpgcommon hashes via OpenSSL), and a second
+              # core typically arrives one level down: Wolfi's client passes a NEEDED-only check while
+              # its libpq loads libcrypto.so.4 and krb5's libk5crypto loads .so.3.
+              # LD_TRACE_LOADED_OBJECTS makes glibc's loader list the closure without running the
+              # tool, wherever the loader lives on this arch.
+              trace="$(LD_TRACE_LOADED_OBJECTS=1 "/usr/bin/$b")"
+              if echo "$trace" | grep -q 'not found'; then
+                echo "$trace" >&2; echo "FAIL: $b has unresolved libraries" >&2; exit 1
+              fi
+              cores="$(echo "$trace" | sed -n 's/^[[:space:]]*\(lib\(crypto\|ssl\)\.so\.[0-9]*\) => \/.*/\1/p' | sort -u | tr '\n' ' ')"
+              echo "$b OpenSSL closure: $cores"
+              [ "$cores" = "libcrypto.so.${{vars.openssl-major}} libssl.so.${{vars.openssl-major}} " ] || {
+                echo "FAIL: $b must load exactly libcrypto.so.${{vars.openssl-major}} + libssl.so.${{vars.openssl-major}} (via libpq), no other OpenSSL" >&2; exit 1; }
+              # Tools that link libcrypto directly carry their own versioned-symbol requirements.
+              vers="$(readelf -W -V "/usr/bin/$b" | sed -n 's/.*Name: OPENSSL_\([0-9][0-9.]*\).*/\1/p' | sort -u | tr '\n' ' ')"
+              echo "$b OpenSSL symbol versions: ${vers:-none}"
+              if echo "$needed" | grep -q '^libcrypto\.so\.'; then
+                [ -n "$vers" ] || { echo "FAIL: $b links libcrypto but references no OPENSSL_* symbol versions" >&2; exit 1; }
+              fi
+              for v in $vers; do
+                maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
+                case "$min" in ''|*[!0-9]*) echo "FAIL: cannot parse OPENSSL_$v" >&2; exit 1 ;; esac
+                if [ "$maj" != "${{vars.openssl-major}}" ] || [ "$min" -gt "${{vars.openssl-minor}}" ]; then
+                  echo "FAIL: $b needs OPENSSL_$v, outside OpenSSL ${{vars.openssl-major}}.0-${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1
+                fi
+              done
+            done
+            # pg_restore is why zlib is enabled: it must read gzip-compressed -Fc archives.
+            for b in pg_dump pg_restore; do
+              readelf -d "/usr/bin/$b" | grep -q 'NEEDED.*\[libz\.so\.1\]' || { echo "FAIL: $b does not link zlib" >&2; exit 1; }
+            done
+            # zlib must be compiled in. Option validation rejects gzip compression before any
+            # connection attempt when it isn't, so this needs no server.
+            out="$(pg_dump -Fc -Z gzip:1 -h /nonexistent -d x 2>&1 || true)"
+            echo "pg_dump -Z gzip probe: $out"
+            if echo "$out" | grep -qi 'not support'; then
+              echo "FAIL: pg_dump built without zlib" >&2; exit 1
+            fi
+            echo "$out" | grep -qi 'connection' || { echo "FAIL: unexpected pg_dump probe output" >&2; exit 1; }
