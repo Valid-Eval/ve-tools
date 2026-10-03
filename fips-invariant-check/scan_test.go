@@ -114,6 +114,9 @@ func TestGoFIPSMode(t *testing.T) {
 		{"DU 1.27 but module not geomys", with(cg127, "chainguard_cryptographic_module", "boringcrypto"), false},
 		{"DU go-fips 1.26.8.1 systemcrypto (#5132 via OpenSSL)", cg126, true},
 		{"systemcrypto without CGO", with(cg126, "CGO_ENABLED", "0"), false},
+		// Whole items only: Go disables an experiment with a "no" prefix.
+		{"GOEXPERIMENT=nosystemcrypto", with(cg126, "GOEXPERIMENT", "nosystemcrypto"), false},
+		{"-tags norequirefips", with(cg126, "-tags", "norequirefips"), false},
 		{"requirefips without systemcrypto", with(cg126, "GOEXPERIMENT", ""), false},
 		{"plain golang (comment-dedup today)", []string{"CGO_ENABLED", "0"}, false},
 		{"boringcrypto", []string{"GOEXPERIMENT", "boringcrypto", "CGO_ENABLED", "1"}, false},
@@ -125,7 +128,7 @@ func TestGoFIPSMode(t *testing.T) {
 	}
 }
 
-func TestSystemCoreMajor(t *testing.T) {
+func TestSystemCoreVersion(t *testing.T) {
 	if m, ok := systemCoreVersion(&fileReport{Path: "/usr/lib/libcrypto.so.4", Soname: "libcrypto.so.4"}); !ok || m != "4" {
 		t.Fatalf("got %q %v", m, ok)
 	}

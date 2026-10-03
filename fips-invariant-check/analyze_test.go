@@ -194,7 +194,7 @@ func TestEvaluateOpenSSL1Soname(t *testing.T) {
 	}
 	sys11 := &fileReport{Path: "/usr/lib/libcrypto.so.1.1", Soname: "libcrypto.so.1.1"}
 	if m, ok := systemCoreVersion(sys11); !ok || m != "1.1" {
-		t.Fatalf("a system libcrypto.so.1.1 is a core (major 1.1), got %q %v", m, ok)
+		t.Fatalf("a system libcrypto.so.1.1 is a core (soname version 1.1), got %q %v", m, ok)
 	}
 }
 

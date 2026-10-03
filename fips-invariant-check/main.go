@@ -3,7 +3,7 @@
 //
 // The invariant:
 //
-//  1. ONE OpenSSL core. Every binary and library that links OpenSSL links the same major
+//  1. ONE OpenSSL core. Every binary and library that links OpenSSL links the same soname version
 //     (libcrypto.so.N). Two cores in one process cannot both initialise the single FIPS provider
 //     module: whichever loads second fails ("could not generate nonce" from libpq, 2026-10-02).
 //  2. NO unvalidated crypto. No binary carries its own crypto library (a precompiled gem or wheel
@@ -307,8 +307,8 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	linkers := map[string][]string{} // soname version -> files that link it
 	var coreAllowed []string
 	for _, r := range in.reports {
-		if major, ok := systemCoreVersion(r); ok {
-			present[major] = append(present[major], r.Path)
+		if ver, ok := systemCoreVersion(r); ok {
+			present[ver] = append(present[ver], r.Path)
 			continue
 		}
 		if len(r.NeededCores) == 0 {
@@ -323,30 +323,30 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 			continue
 		}
 		for _, n := range r.NeededCores {
-			major := coreSoname.FindStringSubmatch(n)[2]
-			if !slices.Contains(linkers[major], r.Path) {
-				linkers[major] = append(linkers[major], r.Path)
+			ver := coreSoname.FindStringSubmatch(n)[2]
+			if !slices.Contains(linkers[ver], r.Path) {
+				linkers[ver] = append(linkers[ver], r.Path)
 			}
 		}
 	}
-	majors := slices.Sorted(maps.Keys(linkers))
+	versions := slices.Sorted(maps.Keys(linkers))
 	switch {
-	case len(majors) > 1:
+	case len(versions) > 1:
 		failed = true
-		names := make([]string, len(majors))
-		for i, m := range majors {
+		names := make([]string, len(versions))
+		for i, m := range versions {
 			names[i] = "libcrypto.so." + m
 		}
 		fmt.Fprintf(out, "FAIL  more than one OpenSSL core is linked: %s\n", strings.Join(names, ", "))
 		fmt.Fprintln(out, "      Two cores in one process cannot both initialise the FIPS provider; whichever loads second fails.")
-		for _, m := range majors {
+		for _, m := range versions {
 			fmt.Fprintf(out, "      linked against .so.%s (%d files):\n", m, len(linkers[m]))
 			for _, p := range head(linkers[m], 15) {
 				fmt.Fprintf(out, "        %s\n", p)
 			}
 		}
-	case len(majors) == 1:
-		fmt.Fprintf(out, "ok    one OpenSSL core linked: libcrypto.so.%s (%d files)\n", majors[0], len(linkers[majors[0]]))
+	case len(versions) == 1:
+		fmt.Fprintf(out, "ok    one OpenSSL core linked: libcrypto.so.%s (%d files)\n", versions[0], len(linkers[versions[0]]))
 	default:
 		fmt.Fprintln(out, "ok    no file links a system OpenSSL")
 	}
@@ -386,6 +386,15 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	}
 	for _, a := range allowed {
 		fmt.Fprintf(out, "      %s\n", a)
+	}
+	var noCode []string
+	for _, r := range in.reports {
+		if r.NoCode {
+			noCode = append(noCode, r.Path)
+		}
+	}
+	if len(noCode) > 0 {
+		fmt.Fprintf(out, "note  %d file(s) hold no runnable code (separate debug info); their linked libraries count, their own symbols are not judged: %s\n", len(noCode), strings.Join(head(noCode, 5), ", "))
 	}
 	for _, e := range allow {
 		if !e.used {

@@ -268,7 +268,7 @@ type fileReport struct {
 	GoCrypto      bool     // Go binary with any crypto compiled in (standard library, x/crypto, or GoUnvalidated)
 	GoUnvalidated []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
 	GoBuildNote   string   // the settings that decided GoFIPS, for the report
-	NoCode        bool     // no executable byte is loadable from this file (separate debug info); not judged
+	NoCode        bool     // nothing in the file can run (separate debug info): its own code is not judged; its linked libraries still count
 }
 
 // scan walks root and analyzes every ELF file. Anything it cannot inspect is returned in
@@ -360,14 +360,6 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	}
 
 	r := &fileReport{Path: imagePath}
-	if noLoadableCode(f) {
-		// Separate debug info (objcopy --only-keep-debug, -dbgsym/.debug packages): it keeps the
-		// symbol table and DWARF, but the loader would map no executable byte from it, so nothing
-		// here can run. Judging its symbols would fail every image that installs debug symbols
-		// for the system libcrypto.
-		r.NoCode = true
-		return r, nil
-	}
 	needed, soname, err := dynamicInfo(f, fh)
 	if err != nil {
 		return nil, err
@@ -378,6 +370,14 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 		}
 	}
 	r.Soname = soname
+	// Linked libraries are always recorded (above). What follows judges the file's own code, so it
+	// is skipped when nothing in the file can run: separate debug info (objcopy --only-keep-debug,
+	// -dbgsym/.debug packages) keeps the symbol table and DWARF, and judging its symbols would
+	// fail every image that installs debug symbols for the system libcrypto.
+	if noLoadableCode(f, headerEnd(f, head)) {
+		r.NoCode = true
+		return r, nil
+	}
 
 	seen := map[string]bool{}
 	for _, get := range []func() ([]elf.Symbol, error){f.Symbols, f.DynamicSymbols} {
@@ -420,22 +420,72 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	return r, nil
 }
 
-// noLoadableCode: the file has loadable segments, but every executable one (PF_X) has no bytes in
-// the file. Decided from the program headers the loader uses, not from section headers or flags,
-// which a file can carry falsely. Relocatable objects (no PT_LOAD) are not covered: their code is
-// in sections and is judged.
-func noLoadableCode(f *elf.File) bool {
-	loads := 0
+// noLoadableCode: nothing in the file can run, decided from the program headers the loader uses
+// (section headers and flags can be carried falsely). All must hold:
+//   - it has loadable segments, and no executable one (PF_X) has file bytes beyond its metadata
+//     prefix: the ELF and program headers plus any notes right after them (objcopy
+//     --only-keep-debug keeps those bytes of a segment that starts at offset 0, the usual layout
+//     without -z separate-code), and the entry point does not lie in those bytes;
+//   - it declares a non-executable stack (PT_GNU_STACK without PF_X); without one, or with an
+//     executable one, a kernel may map every readable segment executable (READ_IMPLIES_EXEC);
+//   - its dynamic table, if any, has no bytes in the file, so it cannot work as a loaded library.
+//
+// Separate debug info satisfies all three. Relocatable objects (no PT_LOAD) are not covered: their
+// code is in sections and is judged.
+func noLoadableCode(f *elf.File, hdrEnd uint64) bool {
+	meta := metadataEnd(f, hdrEnd)
+	loads, nxStack := 0, false
 	for _, p := range f.Progs {
-		if p.Type != elf.PT_LOAD {
-			continue
-		}
-		loads++
-		if p.Flags&elf.PF_X != 0 && p.Filesz > 0 {
-			return false
+		switch p.Type {
+		case elf.PT_LOAD:
+			loads++
+			if p.Flags&elf.PF_X == 0 || p.Filesz == 0 {
+				continue
+			}
+			if p.Off != 0 || p.Filesz > meta {
+				return false
+			}
+			if f.Entry != 0 && f.Entry >= p.Vaddr && f.Entry-p.Vaddr < p.Filesz {
+				return false
+			}
+		case elf.PT_GNU_STACK:
+			nxStack = p.Flags&elf.PF_X == 0
+		case elf.PT_DYNAMIC:
+			if p.Filesz > 0 {
+				return false
+			}
 		}
 	}
-	return loads > 0
+	return loads > 0 && nxStack
+}
+
+// metadataEnd extends the header end over PT_NOTE ranges that follow it without a gap.
+func metadataEnd(f *elf.File, end uint64) uint64 {
+	for grew := true; grew; {
+		grew = false
+		for _, p := range f.Progs {
+			if p.Type == elf.PT_NOTE && p.Off <= end && p.Off+p.Filesz > end {
+				end, grew = p.Off+p.Filesz, true
+			}
+		}
+	}
+	return end
+}
+
+// headerEnd is the file offset where the ELF header and program header table end (0 if unknown).
+func headerEnd(f *elf.File, head []byte) uint64 {
+	var phoff, entsize, num uint64
+	switch {
+	case f.Class == elf.ELFCLASS64 && len(head) >= 0x3a:
+		phoff = f.ByteOrder.Uint64(head[0x20:])
+		entsize, num = uint64(f.ByteOrder.Uint16(head[0x36:])), uint64(f.ByteOrder.Uint16(head[0x38:]))
+	case f.Class == elf.ELFCLASS32 && len(head) >= 0x2e:
+		phoff = uint64(f.ByteOrder.Uint32(head[0x1c:]))
+		entsize, num = uint64(f.ByteOrder.Uint16(head[0x2a:])), uint64(f.ByteOrder.Uint16(head[0x2c:]))
+	default:
+		return 0
+	}
+	return phoff + entsize*num
 }
 
 func inFile(s *elf.Section) bool { return s != nil && s.Type != elf.SHT_NOBITS }
@@ -486,8 +536,8 @@ func dynamicFromProgs(f *elf.File, r io.ReaderAt) ([]string, string, error) {
 	}
 	if dyn.Filesz == 0 {
 		// The table is not in this file: a separate debug-info file (objcopy --only-keep-debug
-		// keeps the program headers but zeroes their file sizes). Decided from the program header
-		// the loader uses, not from section flags, which a file can carry falsely.
+		// keeps PT_DYNAMIC with a zero file size). Decided from the program header the loader
+		// uses, not from section flags, which a file can carry falsely.
 		return nil, "", nil
 	}
 	if dyn.Filesz > maxDynamic {
@@ -675,6 +725,9 @@ func systemCoreVersion(r *fileReport) (string, bool) {
 
 // embeddedReason explains why r does crypto outside a validated FIPS module, or returns "".
 func embeddedReason(r *fileReport) string {
+	if r.NoCode {
+		return "" // nothing in the file can run; only its linked libraries count (rule 1)
+	}
 	if _, ok := systemCoreVersion(r); ok || inDir(r.Path, providerDirs) {
 		return ""
 	}

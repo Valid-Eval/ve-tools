@@ -5,6 +5,8 @@ import (
 	"debug/buildinfo"
 	"debug/elf"
 	"encoding/binary"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -405,12 +408,9 @@ func TestAnalyzeMislabelledDynamicSection(t *testing.T) {
 	src := runnerLibssl(t)
 	patched := copyWith(t, src, func(d []byte) []byte {
 		d = retypeSection(t, d, elf.SHT_DYNAMIC, func(h []byte) { binary.LittleEndian.PutUint32(h[4:], uint32(elf.SHT_PROGBITS)) })
-		shoff := binary.LittleEndian.Uint64(d[0x28:])
-		shnum := binary.LittleEndian.Uint16(d[0x3c:])
-		for i := uint64(0); i < uint64(shnum); i++ {
-			flags := d[shoff+i*64+8:]
-			binary.LittleEndian.PutUint64(flags, binary.LittleEndian.Uint64(flags)&^uint64(elf.SHF_EXECINSTR))
-		}
+		forEachSectionHeader(t, d, func(h []byte) {
+			binary.LittleEndian.PutUint64(h[8:], binary.LittleEndian.Uint64(h[8:])&^uint64(elf.SHF_EXECINSTR))
+		})
 		return d
 	})
 	r, err := analyze(patched, "/usr/lib/libssl.so.3")
@@ -430,10 +430,9 @@ func TestAnalyzeBrokenDynamicSymbolTableIsAnError(t *testing.T) {
 	}
 }
 
-// The separate debug file of a library that defines RAND_bytes keeps the symbol (pointing at a
-// NOBITS .text) but no loadable code; it must not fail as "defines its own RAND_bytes". The
-// library itself must.
-func TestAnalyzeDebugFileOfCryptoLibraryPasses(t *testing.T) {
+// gccAndObjcopy returns gcc and objcopy, or skips.
+func gccAndObjcopy(t *testing.T) (string, string) {
+	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("needs gcc and objcopy")
 	}
@@ -442,22 +441,113 @@ func TestAnalyzeDebugFileOfCryptoLibraryPasses(t *testing.T) {
 	if err1 != nil || err2 != nil {
 		t.Skip("gcc/objcopy not available")
 	}
+	return gcc, objcopy
+}
+
+func build(t *testing.T, name string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+		t.Fatalf("%s %v: %v %s", name, args, err, out)
+	}
+}
+
+// The separate debug file of a library that defines RAND_bytes keeps the symbol (pointing at a
+// NOBITS .text) but no runnable code; it must not fail as "defines its own RAND_bytes", in both
+// segment layouts. The library itself must fail.
+func TestAnalyzeDebugFileOfCryptoLibraryPasses(t *testing.T) {
+	gcc, objcopy := gccAndObjcopy(t)
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "c.c"), []byte("int RAND_bytes(unsigned char*b,int n){for(int i=0;i<n;i++)b[i]=i;return 1;}\n"), 0o644)
-	lib := filepath.Join(dir, "libfoo.so.1")
-	if out, err := exec.Command(gcc, "-shared", "-fPIC", "-g", "-o", lib, filepath.Join(dir, "c.c")).CombinedOutput(); err != nil {
-		t.Skipf("gcc: %v %s", err, out)
+	for _, layout := range []string{"-Wl,-z,separate-code", "-Wl,-z,noseparate-code"} {
+		lib := filepath.Join(dir, "libfoo"+layout[8:]+".so.1")
+		build(t, gcc, "-shared", "-fPIC", "-g", layout, "-o", lib, filepath.Join(dir, "c.c"))
+		dbg := lib + ".debug"
+		build(t, objcopy, "--only-keep-debug", lib, dbg)
+		if r, err := analyze(lib, "/opt/x/libfoo.so.1"); err != nil || embeddedReason(r) == "" {
+			t.Fatalf("%s control: the library itself must fail, got %v %+v", layout, err, r)
+		}
+		r, err := analyze(dbg, "/usr/lib/debug/.build-id/ab/cdef.debug")
+		if err != nil || r == nil || !r.NoCode || embeddedReason(r) != "" {
+			t.Fatalf("%s: its debug file must hold no runnable code and pass, got %v %+v", layout, err, r)
+		}
+		// Weaken the program headers that make "no code" true: the file is then judged and fails.
+		for name, edit := range map[string]func(ph []byte){
+			"no PT_GNU_STACK": func(ph []byte) {
+				if elf.ProgType(binary.LittleEndian.Uint32(ph)) == elf.PT_GNU_STACK {
+					binary.LittleEndian.PutUint32(ph, uint32(elf.PT_NULL))
+				}
+			},
+			"executable stack": func(ph []byte) {
+				if elf.ProgType(binary.LittleEndian.Uint32(ph)) == elf.PT_GNU_STACK {
+					binary.LittleEndian.PutUint32(ph[4:], binary.LittleEndian.Uint32(ph[4:])|uint32(elf.PF_X))
+				}
+			},
+			"executable bytes beyond the headers": func(ph []byte) {
+				if elf.ProgType(binary.LittleEndian.Uint32(ph)) == elf.PT_LOAD && binary.LittleEndian.Uint32(ph[4:])&uint32(elf.PF_X) != 0 {
+					binary.LittleEndian.PutUint64(ph[32:], 0x400) // p_filesz
+				}
+			},
+			"PT_DYNAMIC with bytes": func(ph []byte) {
+				if elf.ProgType(binary.LittleEndian.Uint32(ph)) == elf.PT_DYNAMIC {
+					binary.LittleEndian.PutUint64(ph[32:], 16) // p_filesz
+				}
+			},
+		} {
+			weak := copyWith(t, dbg, func(d []byte) []byte {
+				phoff := binary.LittleEndian.Uint64(d[0x20:])
+				phnum := binary.LittleEndian.Uint16(d[0x38:])
+				for i := uint64(0); i < uint64(phnum); i++ {
+					edit(d[phoff+i*56:][:56])
+				}
+				return d
+			})
+			r, err := analyze(weak, "/usr/lib/debug/.build-id/ab/cdef.debug")
+			if err == nil && (r == nil || r.NoCode || embeddedReason(r) == "") {
+				t.Errorf("%s, %s: must be judged and fail, got %+v", layout, name, r)
+			}
+		}
+		// With noseparate-code the executable segment keeps the header bytes; an entry point inside
+		// them would make them code, so it is judged. (With separate-code that segment has no file
+		// bytes at all, and an entry point in the headers points at non-executable memory.)
+		if layout != "-Wl,-z,noseparate-code" {
+			continue
+		}
+		entry := copyWith(t, dbg, func(d []byte) []byte {
+			binary.LittleEndian.PutUint64(d[0x18:], binary.LittleEndian.Uint64(d[0x20:])+8) // e_entry into the program headers
+			return d
+		})
+		if r, err := analyze(entry, "/usr/lib/debug/x.debug"); err == nil && (r == nil || r.NoCode) {
+			t.Errorf("%s: an entry point in the kept bytes must not count as no code, got %+v", layout, r)
+		}
 	}
-	dbg := filepath.Join(dir, "libfoo.debug")
-	if out, err := exec.Command(objcopy, "--only-keep-debug", lib, dbg).CombinedOutput(); err != nil {
-		t.Fatalf("objcopy: %v %s", err, out)
+}
+
+// A data-only shared library (stock gcc, no executable segment) can still pull in an OpenSSL core
+// when loaded: its DT_NEEDED must be recorded, whatever its code status.
+func TestAnalyzeDataOnlyLibraryLinksRecorded(t *testing.T) {
+	gcc, _ := gccAndObjcopy(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "c.c"), []byte("int RAND_bytes(unsigned char*b,int n){return 1;}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "data.c"), []byte("const int x = 1;\n"), 0o644)
+	build(t, gcc, "-shared", "-fPIC", "-o", filepath.Join(dir, "libcrypto.so.1.1"), "-Wl,-soname,libcrypto.so.1.1", filepath.Join(dir, "c.c"))
+	meta := filepath.Join(dir, "libmeta.so")
+	build(t, gcc, "-shared", "-fPIC", "-nostdlib", "-o", meta, filepath.Join(dir, "data.c"), "-Wl,--no-as-needed", filepath.Join(dir, "libcrypto.so.1.1"))
+	r, err := analyze(meta, "/usr/lib/libmeta.so")
+	if err != nil || r == nil || !slices.Contains(r.NeededCores, "libcrypto.so.1.1") {
+		t.Fatalf("a data-only library's DT_NEEDED core must be recorded, got %v %+v", err, r)
 	}
-	if r, err := analyze(lib, "/opt/x/libfoo.so.1"); err != nil || embeddedReason(r) == "" {
-		t.Fatalf("control: the library itself must fail, got %v %+v", err, r)
+}
+
+// forEachSectionHeader calls fn with each 64-byte section header of a 64-bit little-endian ELF.
+func forEachSectionHeader(t *testing.T, d []byte, fn func(h []byte)) {
+	t.Helper()
+	if d[4] != byte(elf.ELFCLASS64) || d[5] != byte(elf.ELFDATA2LSB) {
+		t.Skip("needs a 64-bit little-endian ELF")
 	}
-	r, err := analyze(dbg, "/usr/lib/debug/.build-id/ab/cdef.debug")
-	if err != nil || r == nil || !r.NoCode || embeddedReason(r) != "" {
-		t.Fatalf("its debug file must carry no code and pass, got %v %+v", err, r)
+	shoff := binary.LittleEndian.Uint64(d[0x28:])
+	shnum := binary.LittleEndian.Uint16(d[0x3c:])
+	for i := uint64(0); i < uint64(shnum); i++ {
+		fn(d[shoff+i*64:][:64])
 	}
 }
 
@@ -466,19 +556,14 @@ func TestAnalyzeDebugFileOfCryptoLibraryPasses(t *testing.T) {
 func TestAnalyzeForgedSectionsStillJudged(t *testing.T) {
 	src := runnerLibssl(t)
 	patched := copyWith(t, src, func(d []byte) []byte {
-		return retypeSection(t, d, elf.SHT_PROGBITS, func(h []byte) {}) // asserts the layout
+		forEachSectionHeader(t, d, func(h []byte) {
+			if binary.LittleEndian.Uint64(h[8:])&uint64(elf.SHF_EXECINSTR) != 0 {
+				binary.LittleEndian.PutUint32(h[4:], uint32(elf.SHT_NOBITS))
+				binary.LittleEndian.PutUint64(h[8:], binary.LittleEndian.Uint64(h[8:])&^uint64(elf.SHF_EXECINSTR))
+			}
+		})
+		return d
 	})
-	d, _ := os.ReadFile(patched)
-	shoff := binary.LittleEndian.Uint64(d[0x28:])
-	shnum := binary.LittleEndian.Uint16(d[0x3c:])
-	for i := uint64(0); i < uint64(shnum); i++ {
-		h := d[shoff+i*64:]
-		if binary.LittleEndian.Uint64(h[8:])&uint64(elf.SHF_EXECINSTR) != 0 {
-			binary.LittleEndian.PutUint32(h[4:], uint32(elf.SHT_NOBITS))
-			binary.LittleEndian.PutUint64(h[8:], binary.LittleEndian.Uint64(h[8:])&^uint64(elf.SHF_EXECINSTR))
-		}
-	}
-	os.WriteFile(patched, d, 0o644)
 	r, err := analyze(patched, "/usr/lib/libssl.so.3")
 	if err != nil || r == nil || r.NoCode || !slices.Contains(r.NeededCores, "libcrypto.so.3") {
 		t.Fatalf("forged section headers must not make a runnable library 'no code', got %v %+v", err, r)
@@ -592,5 +677,43 @@ func TestAnalyzeStrtabOutsideSegments(t *testing.T) {
 	})
 	if _, err := analyze(bad, "/usr/lib/libssl.so.3"); err == nil || !strings.Contains(err.Error(), "string table") {
 		t.Fatalf("an unlocatable dynamic string table must be an error, got %v", err)
+	}
+}
+
+// A NoCode report is never a violation of its own, whatever else it carries.
+func TestEmbeddedReasonNoCode(t *testing.T) {
+	r := &fileReport{Path: "/usr/lib/debug/x.debug", NoCode: true, Defines: []string{"RAND_bytes"}}
+	if reason := embeddedReason(r); reason != "" {
+		t.Fatalf("a file with no runnable code must not be judged, got %q", reason)
+	}
+}
+
+// A read error part-way through is an error, never a partial (and so "clean") scan.
+func TestScanBytesReadErrorIsAnError(t *testing.T) {
+	r := io.MultiReader(bytes.NewReader(make([]byte, 100)), iotest.ErrReader(errors.New("EIO")))
+	if _, err := scanBytes(r, 64, 16); err == nil {
+		t.Fatal("a read error must be returned")
+	}
+}
+
+// A version string without the library's own source paths is not an embedded copy (git carries
+// "OpenSSL x.y.z" text and links the system libcrypto dynamically, or not at all).
+func TestAnalyzeVersionTextWithoutSourceIsNotEmbedded(t *testing.T) {
+	_, withoutCrypto := goFixtures(t)
+	marked := copyWith(t, withoutCrypto, func(d []byte) []byte { return append(d, []byte("\x00OpenSSL 3.6.4 1 Jul 2026\x00")...) })
+	r, err := analyze(marked, "/usr/bin/tool")
+	if err != nil || r == nil || len(r.Markers) == 0 || r.HasSource {
+		t.Fatalf("want markers without HasSource, got %v %+v", err, r)
+	}
+}
+
+// A .dynamic section whose string-table link is broken is an error: its DT_NEEDED cannot be read.
+func TestAnalyzeUnreadableDynamicSectionIsAnError(t *testing.T) {
+	src := runnerLibssl(t)
+	bad := copyWith(t, src, func(d []byte) []byte {
+		return retypeSection(t, d, elf.SHT_DYNAMIC, func(h []byte) { binary.LittleEndian.PutUint32(h[40:], 0) })
+	})
+	if _, err := analyze(bad, "/usr/lib/libssl.so.3"); err == nil {
+		t.Fatal("an unreadable .dynamic must make the file uninspectable")
 	}
 }
