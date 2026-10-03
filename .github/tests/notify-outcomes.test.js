@@ -55,7 +55,9 @@ function extractScript(path) {
 }
 
 // opts: items, env, jira/sendgrid ({status, body, badJson} or {throws}), issueFails,
-//       existing ({title: [labels]}), searchThrows, labelBootstrap ('fail'), addLabelsFails
+//       existing ({title: [labels]}, matched by exact phrase), searchItems ([{title, labels}],
+//       returned for every query, like a phrase match), searchThrows, searchBroken (no data),
+//       labelBootstrap ('fail' | 'missing'), addLabelsFails, removeLabelFails (HTTP status)
 async function run(workflowPath, opts) {
   const calls = [], logs = [], failed = [];
   const env = { JIRA_USER_EMAIL: 'dummy@example.test', JIRA_API_TOKEN: 'dummy-jira-token',
@@ -80,17 +82,31 @@ async function run(workflowPath, opts) {
   const httpErr = (status, msg) => Object.assign(new Error(msg), { status });
   const github = { rest: {
     issues: {
-      getLabel: async () => { if (opts.labelBootstrap === 'fail') throw httpErr(500, 'getLabel 500'); return {}; },
-      createLabel: async () => { if (opts.labelBootstrap === 'fail') throw httpErr(403, 'createLabel 403'); return {}; },
+      getLabel: async () => {
+        if (opts.labelBootstrap === 'fail') throw httpErr(500, 'getLabel 500');
+        if (opts.labelBootstrap === 'missing') throw httpErr(404, 'Not Found');
+        return {};
+      },
+      createLabel: async p => {
+        calls.push({ createLabel: p });
+        if (opts.labelBootstrap === 'fail') throw httpErr(403, 'createLabel 403');
+        return {};
+      },
       create: async p => { calls.push({ issueCreate: p }); if (opts.issueFails) throw new Error('GitHub 500'); return { data: { number: n++ } }; },
       addLabels: async p => { calls.push({ addLabels: p }); if (opts.addLabelsFails) throw new Error('labels 403'); return {}; },
-      removeLabel: async p => { calls.push({ removeLabel: p }); return {}; },
+      removeLabel: async p => {
+        calls.push({ removeLabel: p });
+        if (opts.removeLabelFails) throw httpErr(opts.removeLabelFails, `removeLabel ${opts.removeLabelFails}`);
+        return {};
+      },
     },
     search: { issuesAndPullRequests: async p => {
       calls.push({ search: p });
       if (opts.searchThrows) throw httpErr(403, 'secondary rate limit');
-      const items = Object.entries(existing).filter(([t]) => p.q.includes(`"${t}"`))
-        .map(([title, labels]) => ({ number: 7, title, labels: ['maintenance', ...labels].map(name => ({ name })) }));
+      if (opts.searchBroken) return { data: null };
+      const toItem = ([title, labels]) => ({ number: 7, title, labels: ['maintenance', ...labels].map(name => ({ name })) });
+      if (opts.searchItems) return { data: { items: opts.searchItems.map(i => toItem([i.title, i.labels])) } };
+      const items = Object.entries(existing).filter(([t]) => p.q.includes(`"${t}"`)).map(toItem);
       return { data: { items } };
     } },
   } };
@@ -109,13 +125,18 @@ async function run(workflowPath, opts) {
     issues: count(c => c.issueCreate), jira: count(c => c.fetch && c.fetch.includes('atlassian')),
     email: count(c => c.fetch && c.fetch.includes('sendgrid')),
     added: calls.filter(c => c.addLabels).flatMap(c => c.addLabels.labels),
-    removed: calls.filter(c => c.removeLabel).map(c => c.removeLabel.name) };
+    removed: calls.filter(c => c.removeLabel).map(c => c.removeLabel.name),
+    labelCreates: count(c => c.createLabel) };
 }
 
 const green = r => assert.deepStrictEqual(r.failed, []);
+// red(r, ...parts) or red(r, {lines: n}, ...parts): one setFailed containing every part,
+// and optionally exactly n recorded failures (summary lines after the header).
 const red = (r, ...parts) => {
+  const opts = parts[0] && typeof parts[0] === 'object' && !(parts[0] instanceof RegExp) ? parts.shift() : {};
   assert.strictEqual(r.failed.length, 1, `expected exactly one setFailed, got ${r.failed.length}`);
   for (const p of parts) assert(p instanceof RegExp ? p.test(r.failed[0]) : r.failed[0].includes(p), `missing ${p} in: ${r.failed[0]}`);
+  if (opts.lines !== undefined) assert.strictEqual(r.failed[0].split('\n').length - 1, opts.lines, `expected ${opts.lines} failure line(s): ${r.failed[0]}`);
 };
 
 async function main() {
@@ -128,7 +149,8 @@ async function main() {
   const all = ['credential', 'review'];
   const cases = [
     ['success is green and every channel runs once per item', { items: all }, r => {
-      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [2, 2, 2]); assert.deepStrictEqual(r.added, []);
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [2, 2, 2]);
+      assert.deepStrictEqual(r.added, []); assert.deepStrictEqual(r.removed, []);
     }],
     ['zero in-window items is green, no calls', { items: [] }, r => { green(r); assert.strictEqual(r.calls.length, 0); }],
     ['Jira HTTP 500 fails, names item x channel, email still sent', { items: all, jira: { status: 500 } }, r => {
@@ -136,6 +158,11 @@ async function main() {
       assert.strictEqual(r.email, 2);
     }],
     ['Jira network error fails', { items: ['credential'], jira: { throws: 'ECONNREFUSED' } }, r => red(r, /CRED_A x jira: ECONNREFUSED/)],
+    ['failure detail carries the HTTP status and is capped at 300 characters', { items: ['credential'], jira: { status: 400, body: 'x'.repeat(1000) } }, r => {
+      red(r, { lines: 1 }, 'CRED_A x jira: HTTP 400 xxx');
+      const detail = r.failed[0].split('\n')[1].split('x jira: ')[1];
+      assert.strictEqual(detail.length, 300);
+    }],
     ['Jira 2xx with unparseable body is delivered, not a failure', { items: ['credential'], jira: { status: 201, badJson: true } }, r => {
       green(r); assert.deepStrictEqual(r.added, []);
     }],
@@ -165,6 +192,12 @@ async function main() {
     ['first-run Jira failure labels the new issue pending:jira only', { items: ['credential'], jira: { status: 500 } }, r => {
       red(r, 'CRED_A x jira'); assert.deepStrictEqual(r.added, ['pending:jira']);
     }],
+    ['first-run email failure labels the new issue pending:email only', { items: ['credential'], sendgrid: { status: 500 } }, r => {
+      red(r, 'CRED_A x email'); assert.deepStrictEqual(r.added, ['pending:email']);
+    }],
+    ['first-run email throw labels the new issue pending:email', { items: ['credential'], sendgrid: { throws: 'ETIMEDOUT' } }, r => {
+      assert.deepStrictEqual(r.added, ['pending:email']);
+    }],
     ['unconfigured channel (no opt-out) labels the issue pending', { items: ['credential'], env: { SG_API_KEY: '' } }, r => {
       assert.deepStrictEqual(r.added, ['pending:email']);
     }],
@@ -175,6 +208,23 @@ async function main() {
       green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 1, 0]); assert.deepStrictEqual(r.removed, ['pending:jira']);
       assert.deepStrictEqual(r.added, []);
     }],
+    ['open issue with pending:email retries only email; success clears the label', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:email'] } }, r => {
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 0, 1]); assert.deepStrictEqual(r.removed, ['pending:email']);
+    }],
+    ['both pending: Jira delivered, email fails again -> only pending:jira removed, red on email', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira', 'pending:email'] }, sendgrid: { status: 500 } }, r => {
+      red(r, { lines: 1 }, 'CRED_A x email'); assert.deepStrictEqual([r.jira, r.email], [1, 1]);
+      assert.deepStrictEqual(r.removed, ['pending:jira']); assert.deepStrictEqual(r.added, []);
+    }],
+    ['retry with the channel now waived by the opt-out keeps the pending label', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, env: { JIRA_API_TOKEN: '', ALLOW_UNCONFIGURED_CHANNELS: 'true' } }, r => {
+      green(r); assert.deepStrictEqual(r.removed, []); assert.deepStrictEqual(r.added, []);
+    }],
+    ['label removal failure is recorded; a 404 (already removed) is not', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, removeLabelFails: 500 }, r => {
+      red(r, { lines: 1 }, 'CRED_A x retry-state', 'could not remove pending:jira');
+    }],
+    ['label removal 404 is treated as already removed', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, removeLabelFails: 404 }, green],
+    ['a phrase-matching but non-exact open issue is not treated as the item\'s issue', { items: ['credential'], searchItems: [{ title: 'Rotate credential: CRED_A_OLD', labels: ['pending:jira'] }] }, r => {
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]); assert.deepStrictEqual(r.removed, []);
+    }],
     ['retry that fails again stays red and keeps the label', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, jira: { status: 401 } }, r => {
       red(r, 'CRED_A x jira'); assert.deepStrictEqual(r.removed, []); assert.deepStrictEqual(r.added, []);
     }],
@@ -184,15 +234,22 @@ async function main() {
     ['failure to write retry state is itself a failure', { items: ['credential'], jira: { status: 500 }, addLabelsFails: true }, r => {
       red(r, 'CRED_A x jira', 'CRED_A x retry-state');
     }],
-    // Whole-item paths are loud, recorded in the single summary, and do not stop other items.
+    // Whole-item failures are loud, recorded in the single summary, and do not stop other items.
     ['dedup search failure skips that item, is recorded, and the next item is still delivered', { items: ['credential', 'review'], searchThrows: true }, r => {
-      red(r, 'CRED_A x dedup-search', 'REVIEW_A x dedup-search'); assert.deepStrictEqual([r.jira, r.email], [0, 0]);
+      red(r, { lines: 2 }, 'CRED_A x dedup-search', 'REVIEW_A x dedup-search'); assert.deepStrictEqual([r.jira, r.email], [0, 0]);
     }],
     ['unknown kind is recorded and the next item is still delivered', { items: ['badKind', 'credential'] }, r => {
-      red(r, 'mystery ODD x kind'); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]);
+      red(r, { lines: 1 }, 'mystery ODD x kind'); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]);
     }],
+    ['an unexpected error inside an item is recorded as x item and the run continues', { items: ['credential', 'review'], searchBroken: true }, r => {
+      red(r, { lines: 2 }, 'CRED_A x item', 'REVIEW_A x item');
+    }],
+    // Non-fatal setup path: not a recorded failure.
     ['label bootstrap failure does not stop delivery', { items: ['credential'], labelBootstrap: 'fail' }, r => {
       green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]);
+    }],
+    ['missing maintenance label is created, then delivery proceeds', { items: ['credential'], labelBootstrap: 'missing' }, r => {
+      green(r); assert.strictEqual(r.labelCreates, 1); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]);
     }],
   ];
   for (const v of ['TRUE', 'True', 'true']) {
