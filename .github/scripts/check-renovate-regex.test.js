@@ -1,4 +1,4 @@
-// Tests for check-renovate-regex.js. Run: node --test .github/scripts/
+// Tests for check-renovate-regex.js. Run: node --test .github/scripts/check-renovate-regex.test.js
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert");
@@ -89,4 +89,40 @@ test("a managerFilePatterns entry that is not /regex/ fails", () => {
 test("missing argument exits 2", () => {
   const r = run({ args: [] });
   assert.strictEqual(r.code, 2, r.out);
+});
+
+test("nothing covered fails even when no recipe is present", () => {
+  const r = run({ managers: [], files: { "melange/build.sh": "x\n" } });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /no Renovate regex customManager targets any file under melange\//);
+  assert.doesNotMatch(r.out, /recipe is not targeted/);
+});
+
+test("non-regex customManagers are ignored", () => {
+  const r = run({ managers: [MANAGER, { customType: "jsonata", managerFilePatterns: ["/^melange/libpq-17\\.yaml$/"] }] });
+  assert.strictEqual(r.code, 0, r.out);
+});
+
+test("a recipe in a subdirectory must be covered too", () => {
+  const r = run({ files: { "melange/libpq-17.yaml": RECIPE, "melange/sub/other.yml": "x: 1\n" } });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /::error file=melange\/sub\/other\.yml::recipe is not targeted/);
+});
+
+test("a manager with no matchStrings fails", () => {
+  const r = run({ managers: [{ ...MANAGER, matchStrings: [] }] });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /no matchStrings/);
+});
+
+test("a match without a currentValue capture fails", () => {
+  const r = run({ managers: [{ ...MANAGER, matchStrings: [MANAGER.matchStrings[0].replace("?<currentValue>", "?<value>")] }] });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /no currentValue capture/);
+});
+
+test("% in an annotation is encoded", () => {
+  const r = run({ managers: [{ ...MANAGER, matchStrings: ["(?<currentValue>100%)"] }] });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /\(\?<currentValue>100%25\)/);
 });

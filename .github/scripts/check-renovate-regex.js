@@ -1,19 +1,18 @@
 // Fail unless Renovate's regex customManagers still cover the files under <path-prefix>:
 //  - every regex customManager whose file pattern names the prefix targets at least one file;
-//  - each of its matchStrings matches each targeted file exactly once;
-//  - every recipe (*.yaml) under the prefix is targeted by at least one regex customManager.
+//  - it has matchStrings, and each matches each targeted file exactly once with a currentValue;
+//  - every recipe (*.yaml, *.yml) under the prefix is targeted by at least one regex customManager.
 // Renovate itself reports nothing when a manager stops matching (a renamed file, a typo'd
 // pattern, an edit that breaks the matchString): it just stops proposing updates.
 //
-// Usage: node .github/scripts/check-renovate-regex.js <path-prefix> [renovate.json]
+// Usage (from the repo root): node .github/scripts/check-renovate-regex.js <path-prefix>
 "use strict";
 const fs = require("fs");
 const path = require("path");
 
 const prefix = process.argv[2];
-const configPath = process.argv[3] || "renovate.json";
 if (!prefix) {
-  console.error("usage: check-renovate-regex.js <path-prefix> [renovate.json]");
+  console.error("usage: check-renovate-regex.js <path-prefix>");
   process.exit(2);
 }
 
@@ -24,20 +23,22 @@ function walk(dir) {
   });
 }
 
-// managerFilePatterns entries are "/regex/" strings; legacy fileMatch entries are bare regexes.
+// managerFilePatterns entries must be "/regex/" strings. (Legacy fileMatch entries are bare regexes,
+// compiled directly below.)
 function toRegex(pattern) {
   const m = pattern.match(/^\/(.*)\/([a-z]*)$/);
   if (!m) throw new Error(`unsupported managerFilePatterns entry (not /regex/): ${pattern}`);
   return new RegExp(m[1], m[2]);
 }
 
-// GitHub annotations end at the first newline; escape any so the whole message stays on one line.
+// A workflow command ends at the first raw newline; encode newlines (and % and CR) so the whole
+// message reaches the annotation.
 function annotate(file, msg) {
   const where = file ? ` file=${file}` : "";
   console.log(`::error${where}::${msg.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
 }
 
-const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+const config = JSON.parse(fs.readFileSync("renovate.json", "utf8"));
 const files = walk(prefix).map((f) => f.split(path.sep).join("/"));
 const prefixText = prefix.replace(/\/$/, "");
 const covered = new Set();
@@ -58,21 +59,30 @@ for (const mgr of config.customManagers || []) {
     }
     continue;
   }
+  if (!(mgr.matchStrings || []).length) {
+    annotate(null, `${label}: no matchStrings`);
+    failed = true;
+    continue;
+  }
   for (const file of targets) {
     covered.add(file);
     const content = fs.readFileSync(file, "utf8");
     for (const ms of mgr.matchStrings) {
-      const n = [...content.matchAll(new RegExp(ms, "g"))].length;
-      console.log(`${file}: ${n} match(es) for ${label}`);
-      if (n !== 1) {
-        annotate(file, `Renovate matchString matches ${n} times, expected 1: ${ms}`);
+      const matches = [...content.matchAll(new RegExp(ms, "g"))];
+      console.log(`${file}: ${matches.length} match(es) for ${label}`);
+      if (matches.length !== 1) {
+        annotate(file, `Renovate matchString matches ${matches.length} times, expected 1: ${ms}`);
+        failed = true;
+      } else if (!matches[0].groups || matches[0].groups.currentValue === undefined) {
+        // Renovate drops a match that yields no currentValue, again without saying so.
+        annotate(file, `Renovate matchString has no currentValue capture: ${ms}`);
         failed = true;
       }
     }
   }
 }
 
-for (const file of files.filter((f) => f.endsWith(".yaml"))) {
+for (const file of files.filter((f) => /\.ya?ml$/.test(f))) {
   if (!covered.has(file)) {
     annotate(file, "recipe is not targeted by any Renovate regex customManager");
     failed = true;

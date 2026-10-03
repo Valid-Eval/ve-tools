@@ -21,7 +21,7 @@ The packages are real apks:
 
 ## Package tests
 
-`build.sh` runs these checks. The header check is a build pipeline step; the rest are the recipe's `test:` pipelines, which only `melange test` runs (`melange build` never does), so `build.sh` runs it after building and fails unless its log shows every test block ran. For `libpq-17.yaml`, with `N.M` the OpenSSL line from the recipe's vars:
+`build.sh` runs these checks. The header check is a build pipeline step; the rest are the recipe's `test:` pipelines, which only `melange test` runs (`melange build` never does), so `build.sh` runs it after building and fails unless its log shows every test block ran (`check-tests-ran.sh`). For `libpq-17.yaml`, with `N.M` the OpenSSL line from the recipe's vars:
 
 - **The build env's OpenSSL headers are `N.M`.** Checked before compiling. Wolfi's `openssl-N.M-dev` is what selects them today, but that pin is Wolfi's packaging, not ours.
 - **`libpq.so.5` links only libc, libm, `libssl.so.N` and `libcrypto.so.N`.** This catches a configure or toolchain change that drags in zlib, krb5 or a second OpenSSL major.
@@ -30,7 +30,7 @@ The packages are real apks:
 - **`pg_dump` and `pg_restore` link zlib, and `pg_dump` accepts gzip compression.** A build without zlib rejects `-Z gzip` before connecting.
 - **`ve-libpq-17-dev` installs its headers, `libpq.pc` and `pg_config`, and brings `N.M` OpenSSL headers.** Both OpenSSL lines' `-dev` packages satisfy `libpq.pc`'s `pc:libcrypto`, so the subpackage depends on `openssl-N.M-dev` explicitly. Without it, a fresh `apk add ve-libpq-17-dev` chose `openssl-4.0-dev` next to a 3.x libpq.
 
-These checks have been seen failing on a known-bad input and passing on the real build. The others (the libz NEEDED check, the per-tool symbol-version loop, the `-dev` file checks and the run/parse guards) have not been run against a known-bad input.
+These checks have been seen failing on a known-bad input and passing on the real build. The libz NEEDED check, the per-tool symbol-version loop, the `-dev` file checks and the "does not run" guards have not.
 
 | Check | Known-bad input | Result |
 |---|---|---|
@@ -40,6 +40,8 @@ These checks have been seen failing on a known-bad input and passing on the real
 | `-dev` headers | the `ve-libpq-17-dev` built before the explicit dependency (fresh install pulled `openssl-4.0-dev`) | `melange test` fails |
 | Client closure | Wolfi's `postgresql-17-client` (loads `.so.3` and `.so.4`) | fails |
 | zlib probe | a `--without-zlib` build | fails |
+| Unresolved-library guard | Wolfi's client with `libzstd` removed | fails |
+| Version parse guard | a non-numeric minor (`3.x`) fed to the loop | fails |
 
 Checked locally on arm64 at `e627ddd` (not in CI): with the vars at 4.0 the recipe built and passed every check against Wolfi's `openssl-4.0-dev`. A PR that moves the vars runs CI at the new line.
 
@@ -60,7 +62,7 @@ Renovate, configured in `renovate.json`, tracks two things:
   - PostgreSQL patch releases are mostly security fixes, so this dependency skips the repo-wide 7-day age gate and weekly schedule.
 - **The digest-pinned melange image** in `build.sh`.
 
-CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/`, `renovate.json` or `.github/scripts/`. It tests and runs `.github/scripts/check-renovate-regex.js`, which requires every recipe to be covered by a regex customManager whose matchStrings each match exactly once. It then checks `build.sh`'s argument and out-dir guards and runs `build.sh` (build and package tests) on amd64.
+CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/`, `renovate.json`, `.github/scripts/` or the workflow itself. It tests and runs `.github/scripts/check-renovate-regex.js`, which requires every recipe to be covered by a regex customManager whose matchStrings each match exactly once. It then checks, without docker, that `build.sh`'s argument and out-dir guards and `check-tests-ran.sh` reject bad input with the expected message, and runs `build.sh` (build and package tests) on amd64.
 
 Merging a recipe change and tagging `melange-<recipe>/vN+1` lets each image-\* Renovate pick up the new tag.
 

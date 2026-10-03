@@ -130,7 +130,8 @@ pipeline:
   - uses: strip
 
 # Checked on the INSTALLED package, so a configure or toolchain change that drags another library
-# into libpq's closure (zlib, krb5, a second OpenSSL major) fails the build here, not in an image.
+# into libpq's closure (zlib, krb5, a second OpenSSL major) fails build.sh here (via `melange test`),
+# not in an image.
 test:
   environment:
     contents:

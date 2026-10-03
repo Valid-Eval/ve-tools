@@ -47,15 +47,28 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: build.sh rejects bad arguments and a reused out-dir (no docker needed)
+      - name: build.sh guards and the tests-ran check reject bad input (no docker needed)
+        # Match the expected message, not just a non-zero exit: without the arch guard build.sh
+        # still fails, later and for another reason.
         run: |
-          if melange/build.sh melange/libpq-17.yaml mips "$RUNNER_TEMP/x"; then
-            echo "::error::build.sh accepted an unknown arch"; exit 1
-          fi
+          expect_fail() {  # <expected message> <command...>
+            local want="$1"; shift
+            if out="$("$@" 2>&1)"; then echo "::error::accepted: $*"; exit 1; fi
+            echo "$out"
+            grep -qF -- "$want" <<<"$out" || { echo "::error::failed without '$want': $*"; exit 1; }
+          }
+          expect_fail "unknown arch 'mips'" melange/build.sh melange/libpq-17.yaml mips "$RUNNER_TEMP/x"
           mkdir -p "$RUNNER_TEMP/stale/x86_64" && touch "$RUNNER_TEMP/stale/x86_64/old.apk"
-          if melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/stale"; then
-            echo "::error::build.sh accepted a non-empty out-dir"; exit 1
-          fi
+          expect_fail "is not empty" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/stale"
+          log="$RUNNER_TEMP/test.log"
+          printf '%s\n' "INFO running the main test pipeline" \
+            "INFO running test pipeline for subpackage ve-libpq-17-dev" \
+            "INFO running test pipeline for subpackage ve-postgresql-17-client" > "$log"
+          melange/check-tests-ran.sh melange/libpq-17.yaml "$log"
+          grep -v 'subpackage ve-libpq-17-dev' "$log" > "$log.missing"
+          expect_fail "ran 2 test blocks, recipe has 3" melange/check-tests-ran.sh melange/libpq-17.yaml "$log.missing"
+          printf 'package:\n  name: x\n' > "$RUNNER_TEMP/notests.yaml"
+          expect_fail "has no test blocks" melange/check-tests-ran.sh "$RUNNER_TEMP/notests.yaml" "$log"
 
       - name: Build and test libpq-17 (amd64)
         run: melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/melange-out"
