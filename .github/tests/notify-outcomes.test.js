@@ -2,7 +2,8 @@
 // .github/workflows/credential-rotation-reminder.yml. It extracts the script from the
 // workflow file and runs it with mocked github/context/core/fetch: nothing touches
 // GitHub, Jira, or SendGrid, and all credentials below are dummy values.
-// CI runs it on pull requests (the test-notify job in the same workflow).
+// CI runs it on pull requests that touch the workflow, the harness, or the data files
+// (the test-notify job in the same workflow).
 //
 //   node .github/tests/notify-outcomes.test.js                    # run the outcome scenarios
 //   node .github/tests/notify-outcomes.test.js --calls [workflow]  # run that workflow file
@@ -178,8 +179,11 @@ async function main() {
     ['all channels failing for several items are all listed in one setFailed', { items: all, issueFails: true, jira: { status: 500 }, sendgrid: { throws: 'boom' } }, r => {
       red(r); assert.strictEqual(r.failed[0].split('\n').length, 1 + 6);
     }],
-    ['Jira token missing fails by default', { items: ['credential'], env: { JIRA_API_TOKEN: '' } }, r => red(r, /CRED_A x jira: not configured/)],
+    ['Jira token missing fails by default and labels the issue pending:jira', { items: ['credential'], env: { JIRA_API_TOKEN: '' } }, r => {
+      red(r, /CRED_A x jira: not configured/); assert.deepStrictEqual(r.added, ['pending:jira']);
+    }],
     ['Jira user email missing fails by default', { items: ['credential'], env: { JIRA_USER_EMAIL: '' } }, r => { red(r, /CRED_A x jira: not configured/); assert.strictEqual(r.jira, 0); }],
+    ['SendGrid failure detail carries the HTTP status', { items: ['credential'], sendgrid: { status: 400, body: 'bad' } }, r => red(r, { lines: 1 }, 'CRED_A x email: HTTP 400 bad')],
     ['SendGrid key missing fails by default', { items: ['credential'], env: { SG_API_KEY: '' } }, r => red(r, /CRED_A x email: not configured/)],
     ['empty email_to fails by default and sends nothing to SendGrid', { items: ['noEmail'] }, r => { red(r, /CRED_NOMAIL x email: not configured/); assert.strictEqual(r.email, 0); }],
     ['unconfigured passes with ALLOW_UNCONFIGURED_CHANNELS=true, and leaves no pending label', { items: all, env: { JIRA_API_TOKEN: '', SG_API_KEY: '', ALLOW_UNCONFIGURED_CHANNELS: 'true' } }, r => {
@@ -215,10 +219,16 @@ async function main() {
       red(r, { lines: 1 }, 'CRED_A x email'); assert.deepStrictEqual([r.jira, r.email], [1, 1]);
       assert.deepStrictEqual(r.removed, ['pending:jira']); assert.deepStrictEqual(r.added, []);
     }],
-    ['retry with the channel now waived by the opt-out keeps the pending label', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, env: { JIRA_API_TOKEN: '', ALLOW_UNCONFIGURED_CHANNELS: 'true' } }, r => {
+    ['retry with Jira now waived by the opt-out keeps pending:jira', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, env: { JIRA_API_TOKEN: '', ALLOW_UNCONFIGURED_CHANNELS: 'true' } }, r => {
       green(r); assert.deepStrictEqual(r.removed, []); assert.deepStrictEqual(r.added, []);
     }],
-    ['label removal failure is recorded; a 404 (already removed) is not', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, removeLabelFails: 500 }, r => {
+    ['retry with email now waived by the opt-out keeps pending:email', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:email'] }, env: { SG_API_KEY: '', ALLOW_UNCONFIGURED_CHANNELS: 'true' } }, r => {
+      green(r); assert.deepStrictEqual(r.removed, []); assert.deepStrictEqual(r.added, []);
+    }],
+    ['both delivered on retry: a 404 on the first removal still removes the second', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira', 'pending:email'] }, removeLabelFails: 404 }, r => {
+      green(r); assert.deepStrictEqual(r.removed, ['pending:jira', 'pending:email']);
+    }],
+    ['label removal failure (non-404) is recorded as retry-state', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, removeLabelFails: 500 }, r => {
       red(r, { lines: 1 }, 'CRED_A x retry-state', 'could not remove pending:jira');
     }],
     ['label removal 404 is treated as already removed', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, removeLabelFails: 404 }, green],
