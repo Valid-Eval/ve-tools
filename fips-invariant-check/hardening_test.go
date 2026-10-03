@@ -872,3 +872,21 @@ func TestAnalyzeAwsLcPrefixedLibrary(t *testing.T) {
 		t.Fatalf("aws-lc-rs and ring symbols must count as embedded crypto, got %v %+v", err, r)
 	}
 }
+
+// A symbol-stripped aws-lc-sys build carries no "AWS-LC" text, only the library's source paths;
+// those alone must mark it as an embedded copy.
+func TestAnalyzeStrippedAwsLcMarker(t *testing.T) {
+	_, withoutCrypto := goFixtures(t)
+	marked := copyWith(t, withoutCrypto, func(d []byte) []byte {
+		return append(d, []byte("\x00/build/aws-lc-sys-0.30.0/aws-lc/crypto/fipsmodule/bcm.c\x00")...)
+	})
+	r, err := analyze(marked, "/usr/bin/app")
+	if err != nil || r == nil || !slices.Contains(r.Markers, "aws-lc/crypto/fipsmodule") || !r.HasSource {
+		t.Fatalf("aws-lc source paths must be a marker with source, got %v %+v", err, r)
+	}
+	// Judged as a non-Go binary (Go binaries are judged by their function table instead).
+	nonGo := &fileReport{Path: "/usr/bin/app", Markers: r.Markers, HasSource: true}
+	if embeddedReason(nonGo) == "" {
+		t.Fatal("a non-Go binary carrying aws-lc's source paths and no system core must fail")
+	}
+}
