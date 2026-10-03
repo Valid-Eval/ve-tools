@@ -14,10 +14,12 @@ kubectl ve-queue <name>              # Inspect a specific queue
 # Go binary (ECR credential bridging)
 cd credbridge && go build -o ../build/credbridge .
 
-# Credential rotation workflow
+# Credential rotation + compliance review reminder workflow
 # Runs daily at 9 AM UTC via GitHub Actions
 # Configure credentials in .github/credential-rotations.yml
 # After rotating: update expires date, close GH issue + Jira ticket
+# Configure compliance reviews in .github/compliance-reviews.yml
+# After a review: record the outcome, set the next due date (or remove the entry), close GH issue + Jira ticket
 ```
 
 ## Repository Structure
@@ -26,8 +28,9 @@ cd credbridge && go build -o ../build/credbridge .
 - `vetools/` — Python package (click CLI, kubernetes client, PyRSMQ). Requires Python 3.x.
 - `credbridge/` — Go 1.22+ binary for AWS ECR credential bridging in containers
 - `bin/` — kubectl plugins (`kubectl-ve-console`, `kubectl-ve-queue`, `kubectl-ve-queues`, `dockercredrot`)
-- `.github/workflows/credential-rotation-reminder.yml` — Daily credential expiry checks → GH issues + Jira + email
-- `.github/credential-rotations.yml` — Credential inventory with expiry dates and rotation steps
+- `.github/workflows/credential-rotation-reminder.yml` — Daily credential expiry and compliance-review due-date checks → GH issues + Jira + email
+- `.github/credential-rotations.yml` — Credential inventory with expiry dates and rotation steps (credentials only)
+- `.github/compliance-reviews.yml` — Scheduled compliance reviews (e.g. exception re-reviews) with due dates, steps, and links to the ve-compliance record and Jira ticket
 - `scratch/` — Gitignored working directory for local experiments
 
 ### Compliance Operating System
@@ -58,5 +61,5 @@ Compliance data lives in the dedicated [ve-compliance](https://github.com/Valid-
 ## Gotchas
 
 - **credbridge is built into every VE container image** — it provides ECR auth at runtime. Changes here affect all image-* repos.
-- **Credential rotation workflow** uses org-level secrets (JIRA_API_TOKEN, SG_API_KEY) — test with `dry_run: true` workflow dispatch.
+- **Credential rotation workflow** uses org-level secrets (JIRA_API_TOKEN, SG_API_KEY) — test with `dry_run: true` workflow dispatch. It also sends compliance-review reminders from `.github/compliance-reviews.yml`; each file has its own email/Jira routing, and credential notification wording must stay unchanged.
 - **Go module uses `replace` directive** — `credbridge/` is a local sub-module, not a separate repo.
