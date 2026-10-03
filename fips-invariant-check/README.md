@@ -52,6 +52,17 @@ Structural checks cannot prove behaviour, so an image can also register a **beha
 - **Where it runs:** only inside the image (`-root /`). An explicit `-- CMD` with any other `-root` is an error (exit 2). An inherited `FIPS_INVARIANT_PROBE` is only noted as not run.
 - **Time limit:** `FIPS_INVARIANT_PROBE_TIMEOUT`, default `10m`. A probe that fails to start, exits non-zero or times out fails the run. At the deadline the probe's whole process group is killed, so a child it started cannot keep the build waiting.
 
+## Fleet baseline
+
+`baseline.env` names the one OpenSSL major and the one FIPS provider every VE image uses. It is compiled into the binary, so each checker tag carries a baseline:
+
+- **Rule 1 (fleet part):** the image's single OpenSSL core must be `libcrypto.so.<FIPS_OPENSSL_MAJOR>`, so every image matches every other image, not only itself.
+- **Rule 3:** an image that carries a system OpenSSL must have exactly one FIPS provider module (`fips.so` in a provider directory), and the name and build-info strings compiled into it must equal `FIPS_PROVIDER_NAME` and `FIPS_PROVIDER_BUILDINFO`. This is the Security Policy's Crypto Officer check (`OSSL_PROV_PARAM_NAME`, `OSSL_PROV_PARAM_BUILDINFO`) made automatic. An image with no OpenSSL at all (static Go, distroless) has nothing to check.
+
+The values start at what the fleet ships (survey of deployed images, 2026-10-03). Consistency comes first: choosing another provider or major is one edit to `baseline.env` plus a new checker tag. Renovate tracks the checker version in each image repo, so it opens the bump everywhere at once, and the builds that fail are the migration checklist.
+
+`-baseline FILE` overrides the compiled-in baseline, for trying a change before tagging it.
+
 ## Use
 
 ```dockerfile

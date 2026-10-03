@@ -70,10 +70,11 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	verbose := fl.Bool("v", false, "also list every file that passes while linking or naming crypto")
 	strict := fl.Bool("strict", strictDefault,
 		"production mode: honour NO exemptions, and fail if any allowlist file is present (default from FIPS_INVARIANT_STRICT)")
+	baselineFile := fl.String("baseline", "", "fleet baseline file (KEY=VALUE); default: the baseline.env compiled into this binary")
 	var allowFiles multiFlag
 	fl.Var(&allowFiles, "allow", "extra allowlist file (repeatable); "+defaultAllowDir+"/*.allow inside -root is always looked for (applied normally; its mere presence fails -strict)")
 	fl.Usage = func() {
-		fmt.Fprintf(errOut, "usage: fips-invariant-check [-root DIR] [-allow FILE]... [-strict] [-v] [-- PROBE CMD ARGS...]\n")
+		fmt.Fprintf(errOut, "usage: fips-invariant-check [-root DIR] [-allow FILE]... [-strict] [-baseline FILE] [-v] [-- PROBE CMD ARGS...]\n")
 		fl.PrintDefaults()
 	}
 	if err := fl.Parse(args); err != nil {
@@ -105,7 +106,21 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	}
 	allowPaths = append(allowPaths, allowFiles...)
 
+	baselineText := embeddedBaseline
+	if *baselineFile != "" {
+		b, err := os.ReadFile(*baselineFile)
+		if err != nil {
+			return fatal("%v", err)
+		}
+		baselineText = string(b)
+	}
+	bl, err := parseBaseline(baselineText)
+	if err != nil {
+		return fatal("%v", err)
+	}
+
 	in := evalInput{strict: *strict, verbose: *verbose}
+	in.baseline = bl
 	if *strict {
 		// Runtime images set FIPS_INVARIANT_STRICT and every image built FROM them inherits it.
 		// Exemptions exist for builder-only tooling; one that reached a production image (copied
@@ -275,6 +290,7 @@ type evalInput struct {
 	strict           bool
 	strictAllowFiles []string // in strict mode: allowlist files present in the image (each a failure)
 	verbose          bool
+	baseline         *baseline // fleet OpenSSL major and FIPS provider (nil: not checked)
 }
 
 // evaluate applies both rules to the scan results, writes the report, and returns whether the
@@ -355,6 +371,45 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	for _, m := range slices.Sorted(maps.Keys(present)) {
 		if len(linkers[m]) == 0 {
 			fmt.Fprintf(out, "note  OpenSSL core .so.%s is present but nothing links it (%s)\n", m, strings.Join(present[m], ", "))
+		}
+	}
+
+	// Rule 1, fleet part: the one core is the fleet baseline's major, so every image matches every
+	// other image, not only itself.
+	if in.baseline != nil && len(versions) == 1 && versions[0] != in.baseline.OpenSSLMajor {
+		failed = true
+		fmt.Fprintf(out, "FAIL  the linked OpenSSL core libcrypto.so.%s is not the fleet baseline's libcrypto.so.%s (baseline.env FIPS_OPENSSL_MAJOR)\n", versions[0], in.baseline.OpenSSLMajor)
+	}
+
+	// Rule 3: one FIPS provider, and it is the baseline's. Checked whenever the image carries a
+	// system OpenSSL; this is the Security Policy's Crypto Officer check (module name and build
+	// info) made automatic.
+	if in.baseline != nil && (len(present) > 0 || len(versions) > 0) {
+		var modules []*fileReport
+		for _, r := range in.reports {
+			if isProviderModule(r.Path) {
+				modules = append(modules, r)
+			}
+		}
+		want := fmt.Sprintf("%q build %s (CMVP #%s)", in.baseline.ProviderName, in.baseline.ProviderBuildinfo, in.baseline.CMVP)
+		switch {
+		case len(modules) == 0:
+			failed = true
+			fmt.Fprintf(out, "FAIL  no FIPS provider module (fips.so) in %s; the fleet baseline is %s\n", strings.Join(providerDirs, ", "), want)
+		case len(modules) > 1:
+			failed = true
+			paths := make([]string, len(modules))
+			for i, m := range modules {
+				paths[i] = m.Path
+			}
+			fmt.Fprintf(out, "FAIL  more than one FIPS provider module: %s; the fleet uses exactly one, %s\n", strings.Join(paths, ", "), want)
+		case !slices.Equal(modules[0].ProviderNames, []string{in.baseline.ProviderName}) ||
+			!slices.Equal(modules[0].ProviderBuilds, []string{in.baseline.ProviderBuildinfo}):
+			failed = true
+			fmt.Fprintf(out, "FAIL  FIPS provider %s reports name %q and build %q; the fleet baseline is %s\n",
+				modules[0].Path, strings.Join(modules[0].ProviderNames, ","), strings.Join(modules[0].ProviderBuilds, ","), want)
+		default:
+			fmt.Fprintf(out, "ok    FIPS provider matches the fleet baseline: %s, %s\n", modules[0].Path, want)
 		}
 	}
 

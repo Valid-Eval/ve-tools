@@ -324,6 +324,9 @@ type fileReport struct {
 	GoUnvalidated []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
 	GoBuildNote   string   // the settings that decided GoFIPS, for the report
 	NoCode        bool     // nothing in the file can run (separate debug info): its own code is not judged; its linked libraries still count
+	// For an OpenSSL FIPS provider module (fips.so in a provider dir): the name and build-info
+	// strings compiled into it, which rule 3 compares with the fleet baseline.
+	ProviderNames, ProviderBuilds []string
 }
 
 // scan walks root and analyzes every ELF file. Anything it cannot inspect is returned in
@@ -472,6 +475,11 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	r.Defines = slices.Sorted(maps.Keys(seen))
 	r.Markers = slices.Sorted(maps.Keys(facts.markers))
 	r.HasSource = len(r.Markers) > 0 && facts.source
+	if isProviderModule(imagePath) {
+		if r.ProviderNames, r.ProviderBuilds, err = providerIdentity(realPath); err != nil {
+			return nil, fmt.Errorf("reading FIPS provider identity: %v", err)
+		}
+	}
 
 	// Is it Go? Decided independently of debug/buildinfo, which reports a damaged or relocated
 	// build-info blob as "not a Go executable": that would let a crypto-using Go binary skip the
