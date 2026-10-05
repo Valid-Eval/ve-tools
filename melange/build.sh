@@ -23,6 +23,11 @@ case "$ARCH" in
   arm64) APK_ARCH=aarch64 ;;
   *) echo "::error::unknown arch '$ARCH'"; exit 1 ;;
 esac
+# Set-but-empty is an error, not "use the default": a consumer passing OPENSSL_LINE from a detection
+# step that came back empty would otherwise silently build the recipe's default line.
+if [ -n "${OPENSSL_LINE+set}" ] && [ -z "$OPENSSL_LINE" ]; then
+  echo "::error::OPENSSL_LINE is set but empty; unset it to build the recipe's default line"; exit 1
+fi
 OPENSSL_LINE="${OPENSSL_LINE:-}"
 if [ -n "$OPENSSL_LINE" ]; then
   case "$OPENSSL_LINE" in

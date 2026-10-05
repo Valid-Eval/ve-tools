@@ -30,9 +30,12 @@ vars:
   # coupling, so the controls are this comment, the consuming images' own checks and
   # fips-invariant-check. ONE edit point: the build env's -dev
   # package, the -dev subpackage's dependency, the header check and every linkage assertion below
-  # derive from these two. A single recipe serves one line at a time: if two consumers ever need
-  # different cores at once, build a variant per line instead of moving these. Bump `epoch` when
-  # changing them without a PostgreSQL version change, so the two builds don't share a version.
+  # derive from these two. These are the DEFAULT line. A consumer on another line sets
+  # OPENSSL_LINE=<major>.<minor> for build.sh, which builds and tests a copy of this recipe with
+  # just these two replaced (see README "OpenSSL line"). Those builds share name, version and
+  # epoch with the default; that's safe because nothing is published (each consumer builds into
+  # its own per-run, per-key repo). Bump `epoch` when moving the defaults without a PostgreSQL
+  # version change.
   openssl-major: "3"
   openssl-minor: "6"
   # renovate: postgres/postgres -- tag, commit and package version move together. Keep pg-tag,

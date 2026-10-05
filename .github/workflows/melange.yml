@@ -82,6 +82,7 @@ jobs:
           [ "$rc" = 1 ] || { echo "::error::build.sh exited $rc after a mid-run failure, expected 1"; exit 1; }
           if ls -d "$RUNNER_TEMP"/melange-ws.* 2>/dev/null; then echo "::error::build.sh left its workspace behind"; exit 1; fi
           # OPENSSL_LINE must be <major>.<minor>, rejected before any docker call.
+          OPENSSL_LINE= expect_fail "OPENSSL_LINE is set but empty" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/x"
           for bad in 4 4.0.3 .4 4. a.b 4..0; do
             OPENSSL_LINE="$bad" expect_fail "OPENSSL_LINE must be <major>.<minor>" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/x"
           done
@@ -106,8 +107,9 @@ jobs:
             want='openssl-major:"3"openssl-minor:"6"'; ol=
             [ "$line" = 4.0 ] && { want='openssl-major:"4"openssl-minor:"0"'; ol=4.0; }
             rm -f "$RUNNER_TEMP/seen"
-            SEEN="$RUNNER_TEMP/seen" OPENSSL_LINE="$ol" PATH="$RUNNER_TEMP/stub2:$PATH" \
-              melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/r-$line" >/dev/null 2>&1 || true
+            if [ -n "$ol" ]; then set -- env OPENSSL_LINE="$ol"; else set -- env -u OPENSSL_LINE; fi
+            SEEN="$RUNNER_TEMP/seen" PATH="$RUNNER_TEMP/stub2:$PATH" \
+              "$@" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/r-$line" >/dev/null 2>&1 || true
             got="$(cat "$RUNNER_TEMP/seen" 2>/dev/null || true)"
             [ "$got" = "$want" ] || { echo "::error::OPENSSL_LINE=$line: melange build got [$got], expected [$want]"; exit 1; }
             echo "OPENSSL_LINE=$line: melange build got $got"
