@@ -33,6 +33,11 @@ var cryptoSymbols = map[string]bool{
 	"hc_EVP_DigestInit_ex": true,
 }
 
+// moduleEntryPoints mark an OpenSSL provider (OSSL_provider_init) or OpenSSL 3 engine (bind_engine):
+// a module the core loads on request, wherever it sits (OPENSSL_MODULES / OPENSSL_ENGINES can point
+// anywhere).
+var moduleEntryPoints = map[string]bool{"OSSL_provider_init": true, "bind_engine": true}
+
 // otherCryptoSymbols are public entry points of independent (non-OpenSSL) crypto libraries. A file
 // that DEFINES one carries that library compiled in (statically linked); its own soname, when it
 // is a shared copy, is caught by otherCryptoLibs. Symbols only: a stripped static copy is a known gap.
@@ -338,18 +343,19 @@ var providerDirs = func() []string {
 var skipDirs = map[string]bool{"/proc": true, "/sys": true, "/dev": true}
 
 type fileReport struct {
-	Path          string   // absolute path inside the image
-	Soname        string   // DT_SONAME, if any
-	NeededCores   []string // libcrypto.so.N / libssl.so.N this file links
-	Defines       []string // crypto entry points this file defines (any binding)
-	Markers       []string // crypto-library version markers found in the bytes
-	HasSource     bool     // the bytes also carry the library's own source paths (compiled-in copy)
-	IsGo          bool
-	GoFIPS        bool     // built on one of the two accepted routes (see goFIPSMode)
-	GoCrypto      bool     // Go binary with any crypto compiled in (standard library, x/crypto, or GoUnvalidated)
-	GoUnvalidated []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
-	GoBuildNote   string   // the settings that decided GoFIPS, for the report
-	NoCode        bool     // nothing in the file can run (separate debug info): its own code is not judged; its linked libraries still count
+	Path           string   // absolute path inside the image
+	Soname         string   // DT_SONAME, if any
+	NeededCores    []string // libcrypto.so.N / libssl.so.N this file links
+	Defines        []string // crypto entry points this file defines (any binding)
+	Markers        []string // crypto-library version markers found in the bytes
+	HasSource      bool     // the bytes also carry the library's own source paths (compiled-in copy)
+	IsGo           bool
+	GoFIPS         bool     // built on one of the two accepted routes (see goFIPSMode)
+	GoCrypto       bool     // Go binary with any crypto compiled in (standard library, x/crypto, or GoUnvalidated)
+	GoUnvalidated  []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
+	GoBuildNote    string   // the settings that decided GoFIPS, for the report
+	NoCode         bool     // nothing in the file can run (separate debug info): its own code is not judged; its linked libraries still count
+	LoadableModule bool     // defines OSSL_provider_init or bind_engine: an OpenSSL provider or engine the core can load
 	// For an OpenSSL FIPS provider module (fips.so or fips-<version>.so, anywhere): the name and build-info
 	// strings compiled into it, which rule 3 compares with the fleet baseline.
 	ProviderNames, ProviderBuilds []string
@@ -488,6 +494,9 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 		for _, s := range syms {
 			if s.Section == elf.SHN_UNDEF {
 				continue
+			}
+			if moduleEntryPoints[s.Name] {
+				r.LoadableModule = true
 			}
 			switch {
 			case cryptoSymbols[s.Name]:

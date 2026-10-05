@@ -67,7 +67,11 @@ func parseBaseline(s string) (*baseline, error) {
 		if _, dup := kv[k]; dup {
 			return nil, fmt.Errorf("baseline: %s is set twice", k)
 		}
-		kv[k] = strings.Trim(strings.TrimSpace(v), `"`)
+		v = strings.TrimSpace(v)
+		if strings.HasPrefix(v, `"`) != strings.HasSuffix(v, `"`) || v == `"` {
+			return nil, fmt.Errorf("baseline: %s has unbalanced quotes", k)
+		}
+		kv[k] = strings.TrimSuffix(strings.TrimPrefix(v, `"`), `"`)
 	}
 	b := &baseline{OpenSSLMajors: strings.Fields(kv["FIPS_OPENSSL_MAJORS"]), ProviderName: kv["FIPS_PROVIDER_NAME"]}
 	for _, k := range []string{"FIPS_OPENSSL_MAJORS", "FIPS_PROVIDER_NAME", "FIPS_PROVIDER_BUILDS"} {

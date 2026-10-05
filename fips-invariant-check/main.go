@@ -457,12 +457,15 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 			modules = append(modules, r)
 		}
 	}
-	// Any other module in a provider dir (legacy.so, an engine, a provider under another name)
-	// is crypto outside a validated module that the core can load on request; rule 2 skips the
-	// provider dirs, so it is judged here. Only a non-strict (builder) image may exempt it.
+	// Any other loadable module (legacy.so, an engine, a provider under another name) is crypto
+	// outside a validated module that the core can load on request. It is judged wherever it
+	// sits: in a system provider dir, under any ossl-modules/ or engines-3/ directory, or anywhere
+	// if it defines a provider/engine entry point. Rule 2 does not catch it (a real legacy.so
+	// defines no crypto entry points and links the system core). Only a non-strict (builder)
+	// image may exempt it.
 	if in.baseline != nil {
 		for _, r := range in.reports {
-			if isProviderModule(r.Path) || !inDir(r.Path, providerDirs) {
+			if isProviderModule(r.Path) || !isLoadableModule(r) {
 				continue
 			}
 			if e := matchAllow(allow, r.Path); e != nil {
@@ -473,7 +476,17 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 			fmt.Fprintf(out, "FAIL  %s is a loadable OpenSSL module other than a FIPS provider (crypto outside a validated module); remove it from the image\n", r.Path)
 		}
 	}
-	if in.baseline != nil && (len(present) > 0 || len(versions) > 0 || len(modules) > 0) {
+	// A present core that a non-strict (builder) image exempts by path does not by itself call for a
+	// provider, so a builder stage on a non-FIPS base can exempt its core and its linkers.
+	presentKept := 0
+	for _, files := range present {
+		for _, p := range files {
+			if matchAllow(allow, p) == nil {
+				presentKept++
+			}
+		}
+	}
+	if in.baseline != nil && (presentKept > 0 || len(versions) > 0 || len(modules) > 0) {
 		want := in.baseline.providersString()
 		if len(modules) == 0 {
 			failed = true
@@ -619,4 +632,18 @@ func head(s []string, n int) []string {
 		return s
 	}
 	return append(s[:n:n], fmt.Sprintf("... and %d more", len(s)-n))
+}
+
+// isLoadableModule: an OpenSSL provider or engine module other than by name: in a system provider
+// dir, in any directory named ossl-modules or engines-3, or defining a provider/engine entry point.
+func isLoadableModule(r *fileReport) bool {
+	if r.LoadableModule || inDir(r.Path, providerDirs) {
+		return true
+	}
+	for _, c := range strings.Split(path.Dir(r.Path), "/") {
+		if c == "ossl-modules" || c == "engines-3" {
+			return true
+		}
+	}
+	return false
 }
