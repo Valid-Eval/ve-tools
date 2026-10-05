@@ -7,7 +7,10 @@
 # melange runs in a container and drives the HOST docker daemon (--runner docker), so its
 # workspace is mounted at the same path inside and outside the container.
 #
-# Usage: build.sh <recipe.yaml> <amd64|arm64> <out-dir>
+# Usage: [OPENSSL_LINE=<major>.<minor>] build.sh <recipe.yaml> <amd64|arm64> <out-dir>
+# OPENSSL_LINE builds for a consumer's OpenSSL line (for example 4.0) instead of the recipe's
+# default `openssl-major`/`openssl-minor` vars. Each image follows its own base's line, so the
+# consumer derives it from its base and passes it here; the recipe file itself is not edited.
 # Output: <out-dir>/<apk-arch>/{APKINDEX.tar.gz,*.apk} and <out-dir>/melange.rsa.pub
 # <out-dir>/<apk-arch> must be absent or empty: use a fresh out-dir per run.
 set -euo pipefail
@@ -20,6 +23,14 @@ case "$ARCH" in
   arm64) APK_ARCH=aarch64 ;;
   *) echo "::error::unknown arch '$ARCH'"; exit 1 ;;
 esac
+OPENSSL_LINE="${OPENSSL_LINE:-}"
+if [ -n "$OPENSSL_LINE" ]; then
+  case "$OPENSSL_LINE" in
+    *[!0-9.]*|.*|*.|*.*.*|*..*) echo "::error::OPENSSL_LINE must be <major>.<minor> (e.g. 4.0), got '$OPENSSL_LINE'"; exit 1 ;;
+    *.*) ;;
+    *) echo "::error::OPENSSL_LINE must be <major>.<minor> (e.g. 4.0), got '$OPENSSL_LINE'"; exit 1 ;;
+  esac
+fi
 
 # Digest-pinned; Renovate tracks it through the customManagers entry in renovate.json.
 MELANGE_IMAGE="cgr.dev/chainguard/melange:latest@sha256:15dd85c0e35c099e4142c463d8479da769f319f01ab0f9e6ff427f79d63091f9"
@@ -38,6 +49,29 @@ WORK="$(mktemp -d "${RUNNER_TEMP:-/tmp}/melange-ws.XXXXXX")"
 # trap can't just preserve $?.
 DONE=0
 trap 'rm -rf "$WORK"; [ "$DONE" = 1 ] || exit 1' EXIT
+
+# With OPENSSL_LINE, build and test a rendered copy of the recipe whose two vars are replaced, so
+# `melange build`, `melange test` and check-tests-ran.sh all see the same line. (`melange build
+# --vars-file` exists, but `melange test` has no equivalent and the test pipelines read the vars.)
+# Each var line must occur exactly once, and the copy must differ from the recipe in exactly those
+# two lines, or the build stops: a silent no-op would build the default line under the new name.
+if [ -n "$OPENSSL_LINE" ]; then
+  maj="${OPENSSL_LINE%%.*}"; min="${OPENSSL_LINE#*.}"
+  for v in openssl-major openssl-minor; do
+    n="$(grep -c "^  $v: \"[0-9]*\"\$" "$RECIPE" || true)"
+    [ "$n" = 1 ] || { echo "::error::$(basename "$RECIPE") must define '  $v: \"N\"' exactly once (found $n)"; exit 1; }
+  done
+  mkdir "$WORK/recipe"
+  RENDERED="$WORK/recipe/$(basename "$RECIPE")"
+  sed -e "s/^  openssl-major: \"[0-9]*\"\$/  openssl-major: \"$maj\"/" \
+      -e "s/^  openssl-minor: \"[0-9]*\"\$/  openssl-minor: \"$min\"/" "$RECIPE" > "$RENDERED"
+  grep -qx "  openssl-major: \"$maj\"" "$RENDERED" && grep -qx "  openssl-minor: \"$min\"" "$RENDERED" \
+    || { echo "::error::rendering $(basename "$RECIPE") at OpenSSL $OPENSSL_LINE failed"; exit 1; }
+  changed="$(diff "$RECIPE" "$RENDERED" | grep -c '^>' || true)"
+  [ "$changed" -le 2 ] || { echo "::error::rendering changed $changed lines, expected at most 2"; exit 1; }
+  RECIPE="$RENDERED"
+  echo "=== building at OpenSSL $OPENSSL_LINE (OPENSSL_LINE) instead of the recipe's default vars ==="
+fi
 
 run_melange() {
   docker run --rm --privileged \

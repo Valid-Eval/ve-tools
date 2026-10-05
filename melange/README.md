@@ -12,7 +12,7 @@ Source-built packages shared across the VE image fleet, built with [melange](htt
 Nothing is published. Each image-\* CI:
 
 1. Checks out ve-tools at a pinned tag and verifies the commit, e.g. `melange-libpq-17/v1` (Renovate tracks it).
-2. Runs `melange/build.sh <recipe> <amd64|arm64> <build-context>/melange-packages`, which signs with a key generated for that run.
+2. Runs `melange/build.sh <recipe> <amd64|arm64> <build-context>/melange-packages`, which signs with a key generated for that run. An image whose base is on a different OpenSSL line from the recipe's default vars sets `OPENSSL_LINE=<major>.<minor>` (see **OpenSSL line**), derived from its own base.
 3. In its Dockerfile, trusts that key for one `apk add --repository …` and then deletes it. Install the key as `/etc/apk/keys/melange.rsa.pub`, the exact name recorded in the index signature: under any other name apk silently skips the repository and reports the packages as missing.
 
 The packages are real apks:
@@ -43,15 +43,17 @@ These checks have been seen failing on a known-bad input and passing on the real
 | Unresolved-library guard | Wolfi's client with `libzstd` removed | fails |
 | Version parse guard | a non-numeric minor (`3.x`) fed to the loop | fails |
 
-Checked locally on arm64 at `e627ddd` (not in CI): with the vars at 4.0 the recipe built and passed every check against Wolfi's `openssl-4.0-dev`. A PR that moves the vars runs CI at the new line.
+CI builds and tests the recipe both at its default vars and with `OPENSSL_LINE=4.0`.
 
 ## OpenSSL line
 
-The recipe's `openssl-major`/`openssl-minor` vars are the one edit point. The build env's `-dev` package, the `-dev` subpackage's dependency and every check above derive from them. 3.x and 4.x are both acceptable. The vars must follow the line the **consuming** runtimes link (CPython `_ssl`, Ruby `openssl.so`), and a different major in one process is the failure this recipe exists to prevent.
+The recipe's `openssl-major`/`openssl-minor` vars set the line. The build env's `-dev` package, the `-dev` subpackage's dependency and every check above derive from them. 3.x and 4.x are both acceptable. The line must match what the **consuming** image's runtimes link (CPython `_ssl`, Ruby `openssl.so`, or the base's own OpenSSL), and a different major in one process is the failure this recipe exists to prevent.
+
+Each image follows its own base, so consumers can need different lines at once (for example a base on 3.6 next to an OpenSSL-4-only base). The vars in the file are the default. A consumer on another line sets `OPENSSL_LINE=<major>.<minor>`, and `build.sh` builds and tests a rendered copy of the recipe with just those two vars replaced. It refuses a value that isn't `<major>.<minor>`, or a recipe where either var line is missing or duplicated, rather than silently building the default line.
 
 - Renovate cannot see that coupling. The controls are the consuming images' own checks and `fips-invariant-check`.
-- Move the vars in the same change as the consuming base images' runtime move, and bump `epoch` if the PostgreSQL version doesn't change with them.
-- One recipe serves one line at a time. If two consumers need different lines at once, build a variant per line rather than moving the vars.
+- A consumer should derive `OPENSSL_LINE` from its base, not hard-code it, so a base move changes the build line or fails loudly.
+- Move the default vars only when the default consumer set moves, and bump `epoch` if the PostgreSQL version doesn't change with them.
 
 ## Updates
 
@@ -62,7 +64,7 @@ Renovate, configured in `renovate.json`, tracks two things:
   - PostgreSQL patch releases are mostly security fixes, so this dependency skips the repo-wide 7-day age gate and weekly schedule.
 - **The digest-pinned melange image** in `build.sh`.
 
-CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/`, `renovate.json`, `.github/scripts/` or the workflow itself. It tests and runs `.github/scripts/check-renovate-regex.js`, which requires every recipe to be covered by a regex customManager whose matchStrings each match exactly once. It then checks, without docker, that `build.sh`'s argument and out-dir guards and `check-tests-ran.sh` reject bad input with the expected message, and that `build.sh` exits 1 and cleans up after a mid-run failure. Finally it runs `build.sh` (build and package tests) on amd64.
+CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/`, `renovate.json`, `.github/scripts/` or the workflow itself. It tests and runs `.github/scripts/check-renovate-regex.js`, which requires every recipe to be covered by a regex customManager whose matchStrings each match exactly once. It then checks, without docker, that `build.sh`'s argument, out-dir and `OPENSSL_LINE` guards and `check-tests-ran.sh` reject bad input with the expected message, that `build.sh` exits 1 and cleans up after a mid-run failure, and (through a stub docker) that `melange build` receives the recipe at the requested line. Finally it runs `build.sh` (build and package tests) on amd64, at the default vars and at `OPENSSL_LINE=4.0`, in separate jobs.
 
 Merging a recipe change and tagging `melange-<recipe>/vN+1` lets each image-\* Renovate pick up the new tag.
 
@@ -74,4 +76,5 @@ Scanners match apk packages to advisories by package name against Wolfi's securi
 
 ```bash
 melange/build.sh melange/libpq-17.yaml amd64 "$(mktemp -d)"   # needs docker; a fresh out-dir each run
+OPENSSL_LINE=4.0 melange/build.sh melange/libpq-17.yaml amd64 "$(mktemp -d)"   # for an OpenSSL 4.0 consumer
 ```
