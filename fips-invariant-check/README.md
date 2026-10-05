@@ -54,12 +54,12 @@ Structural checks cannot prove behaviour, so an image can also register a **beha
 
 ## Fleet baseline
 
-`baseline.env` names the one OpenSSL major and the one FIPS provider every VE image uses. It is compiled into the binary, so each checker tag carries a baseline:
+`baseline.env` names the OpenSSL majors a VE image may link and the one FIPS provider every VE image uses. It is compiled into the binary, so each checker tag carries a baseline:
 
-- **Rule 1 (fleet part):** the image's single OpenSSL core must be `libcrypto.so.<FIPS_OPENSSL_MAJOR>`, so every image matches every other image, not only itself.
-- **Rule 3:** an image that carries a system OpenSSL must have exactly one FIPS provider module (`fips.so` in a provider directory), and the name and build-info strings compiled into it must equal `FIPS_PROVIDER_NAME` and `FIPS_PROVIDER_BUILDINFO`. This is the Security Policy's Crypto Officer check (`OSSL_PROV_PARAM_NAME`, `OSSL_PROV_PARAM_BUILDINFO`) made automatic. An image with no OpenSSL at all (static Go, distroless) has nothing to check.
+- **Rule 1 (fleet part):** each image has one OpenSSL core, and its major follows that image's DU base. The image's own major is the core it links or, if nothing links one, the one core present. That major must be in `FIPS_OPENSSL_MAJORS` (`3 4` while DU moves its bases to OpenSSL 4). A core of any **other** major in the same image fails even if nothing links it yet, because the next package or `dlopen` that links it makes a second core in the process. With nothing linked, two present majors fail too. Remove the other major's files; derive which major to remove from what the image's runtime links, never hardcode it.
+- **Rule 3:** an image that carries a system OpenSSL must have exactly one FIPS provider module (`fips.so`, anywhere in the image, since `OPENSSL_MODULES` can point anywhere), and the name and build-info strings compiled into it must equal `FIPS_PROVIDER_NAME` and `FIPS_PROVIDER_BUILDINFO`. This automates the comparison the Security Policy's Crypto Officer check makes (`OSSL_PROV_PARAM_NAME`, `OSSL_PROV_PARAM_BUILDINFO`), against the fleet baseline: it proves every image ships the same provider build, not that the build is the certificate's. An image with no OpenSSL at all (static Go, distroless) has nothing to check. Every other module in a provider directory (`legacy.so`, an engine) fails.
 
-The values start at what the fleet ships (survey of deployed images, 2026-10-03). Consistency comes first: choosing another provider or major is one edit to `baseline.env` plus a new checker tag. Renovate tracks the checker version in each image repo, so it opens the bump everywhere at once, and the builds that fail are the migration checklist.
+The provider values start at what the fleet ships (survey of deployed images, 2026-10-03). Changing the provider, or the set of majors, is one edit to `baseline.env` plus a new checker tag. Renovate tracks the checker version in each image repo, so it opens the bump everywhere at once, and the builds that fail are the migration checklist.
 
 `-baseline FILE` overrides the compiled-in baseline, for trying a change before tagging it.
 

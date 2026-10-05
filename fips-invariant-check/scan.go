@@ -833,7 +833,9 @@ func embeddedReason(r *fileReport) string {
 	if r.NoCode {
 		return "" // nothing in the file can run; only its linked libraries count (rule 1)
 	}
-	if _, ok := systemCoreVersion(r); ok || inDir(r.Path, providerDirs) {
+	// A fips.so is exempt wherever it is (OPENSSL_MODULES can point anywhere), matching rule 3,
+	// which holds every fips.so in the image to the baseline's provider name and build.
+	if _, ok := systemCoreVersion(r); ok || inDir(r.Path, providerDirs) || isProviderModule(r.Path) {
 		return ""
 	}
 	for _, l := range otherCryptoLibs {

@@ -14,17 +14,17 @@ import (
 //go:embed baseline.env
 var embeddedBaseline string
 
-// baseline is the fleet-wide OpenSSL major and FIPS provider identity every image must match.
+// baseline is the fleet-wide set of OpenSSL majors and the FIPS provider identity every image must match.
 type baseline struct {
-	OpenSSLMajor      string // "3" means libcrypto.so.3
-	ProviderName      string // OSSL_PROV_PARAM_NAME of the one fips.so
-	ProviderBuildinfo string // OSSL_PROV_PARAM_BUILDINFO of the one fips.so
-	CMVP              string // certificate, for the report only
+	OpenSSLMajors     []string // allowed majors; each image links exactly one of them ("3" means libcrypto.so.3)
+	ProviderName      string   // OSSL_PROV_PARAM_NAME of the one fips.so
+	ProviderBuildinfo string   // OSSL_PROV_PARAM_BUILDINFO of the one fips.so
+	CMVP              string   // certificate, for the report only
 }
 
 // parseBaseline reads KEY=VALUE lines ('#' comments, optional double quotes). Every key is required.
 func parseBaseline(s string) (*baseline, error) {
-	known := map[string]bool{"FIPS_OPENSSL_MAJOR": true, "FIPS_PROVIDER_NAME": true, "FIPS_PROVIDER_BUILDINFO": true, "FIPS_PROVIDER_CMVP": true}
+	known := map[string]bool{"FIPS_OPENSSL_MAJORS": true, "FIPS_PROVIDER_NAME": true, "FIPS_PROVIDER_BUILDINFO": true, "FIPS_PROVIDER_CMVP": true}
 	kv := map[string]string{}
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)
@@ -44,15 +44,20 @@ func parseBaseline(s string) (*baseline, error) {
 		}
 		kv[k] = strings.Trim(strings.TrimSpace(v), `"`)
 	}
-	b := &baseline{kv["FIPS_OPENSSL_MAJOR"], kv["FIPS_PROVIDER_NAME"], kv["FIPS_PROVIDER_BUILDINFO"], kv["FIPS_PROVIDER_CMVP"]}
-	for k, v := range map[string]string{"FIPS_OPENSSL_MAJOR": b.OpenSSLMajor, "FIPS_PROVIDER_NAME": b.ProviderName,
+	b := &baseline{strings.Fields(kv["FIPS_OPENSSL_MAJORS"]), kv["FIPS_PROVIDER_NAME"], kv["FIPS_PROVIDER_BUILDINFO"], kv["FIPS_PROVIDER_CMVP"]}
+	for k, v := range map[string]string{"FIPS_OPENSSL_MAJORS": strings.Join(b.OpenSSLMajors, " "), "FIPS_PROVIDER_NAME": b.ProviderName,
 		"FIPS_PROVIDER_BUILDINFO": b.ProviderBuildinfo, "FIPS_PROVIDER_CMVP": b.CMVP} {
 		if v == "" {
 			return nil, fmt.Errorf("baseline: %s is missing", k)
 		}
 	}
-	if !regexp.MustCompile(`^[0-9]+$`).MatchString(b.OpenSSLMajor) {
-		return nil, fmt.Errorf("baseline: FIPS_OPENSSL_MAJOR %q is not a number", b.OpenSSLMajor)
+	for i, m := range b.OpenSSLMajors {
+		if !regexp.MustCompile(`^[0-9]+$`).MatchString(m) {
+			return nil, fmt.Errorf("baseline: FIPS_OPENSSL_MAJORS entry %q is not a number", m)
+		}
+		if slices.Contains(b.OpenSSLMajors[:i], m) {
+			return nil, fmt.Errorf("baseline: FIPS_OPENSSL_MAJORS lists %s twice", m)
+		}
 	}
 	return b, nil
 }

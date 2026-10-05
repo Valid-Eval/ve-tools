@@ -295,7 +295,7 @@ type evalInput struct {
 	strict           bool
 	strictAllowFiles []string // in strict mode: allowlist files present in the image (each a failure)
 	verbose          bool
-	baseline         *baseline // fleet OpenSSL major and FIPS provider (nil: not checked)
+	baseline         *baseline // fleet OpenSSL majors and FIPS provider (nil: not checked)
 }
 
 // evaluate applies both rules to the scan results, writes the report, and returns whether the
@@ -379,27 +379,48 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 		}
 	}
 
-	// Rule 1, fleet part: the one core is the fleet baseline's major, so every image matches every
-	// other image, not only itself.
-	if in.baseline != nil && len(versions) == 1 && versions[0] != in.baseline.OpenSSLMajor {
-		failed = true
-		fmt.Fprintf(out, "FAIL  the linked OpenSSL core libcrypto.so.%s is not the fleet baseline's libcrypto.so.%s (baseline.env FIPS_OPENSSL_MAJOR)\n", versions[0], in.baseline.OpenSSLMajor)
-	}
-	// A core of another major that nothing links yet still fails: the next package or dlopen that
-	// links it makes a second core in the process (the 2026-10-02 outage). Only a non-strict
-	// (builder) image may exempt the file by path.
-	if in.baseline != nil {
-		for _, m := range slices.Sorted(maps.Keys(present)) {
-			if m == in.baseline.OpenSSLMajor {
-				continue
+	// Rule 1, against the baseline. The image's own major is the one core it links or, if nothing
+	// links one, the one core present. That major must be one the fleet accepts, and a core of
+	// any other major fails even unlinked: the next package or dlopen that links it makes a second
+	// core in the process (the 2026-10-02 outage). Only a non-strict (builder) image may exempt
+	// such a file by path. With two linked cores the check above has already failed.
+	if in.baseline != nil && len(versions) <= 1 {
+		allowed := strings.Join(in.baseline.OpenSSLMajors, " ")
+		own := ""
+		if len(versions) == 1 {
+			own = versions[0]
+		} else {
+			var kept []string // majors present with at least one file not exempted
+			for _, m := range slices.Sorted(maps.Keys(present)) {
+				if slices.ContainsFunc(present[m], func(p string) bool { return matchAllow(allow, p) == nil }) {
+					kept = append(kept, m)
+				}
 			}
-			for _, p := range present[m] {
-				if e := matchAllow(allow, p); e != nil {
-					fmt.Fprintf(out, "      ALLOWED %s is OpenSSL core .so.%s, not the fleet baseline's .so.%s\n        exemption (%s): %s\n", p, m, in.baseline.OpenSSLMajor, e.source, e.reason)
+			switch {
+			case len(kept) == 1:
+				own = kept[0]
+			case len(kept) > 1:
+				failed = true
+				fmt.Fprintf(out, "FAIL  OpenSSL cores of more than one major are present (.so.%s) and nothing links any of them, so the image has no single core; keep one\n", strings.Join(kept, ", .so."))
+			}
+		}
+		if own != "" && !slices.Contains(in.baseline.OpenSSLMajors, own) {
+			failed = true
+			fmt.Fprintf(out, "FAIL  the image's OpenSSL core libcrypto.so.%s is not a major the fleet accepts (%s; baseline.env FIPS_OPENSSL_MAJORS)\n", own, allowed)
+		}
+		if own != "" {
+			for _, m := range slices.Sorted(maps.Keys(present)) {
+				if m == own {
 					continue
 				}
-				failed = true
-				fmt.Fprintf(out, "FAIL  %s is OpenSSL core .so.%s, not the fleet baseline's .so.%s; remove it from the image\n", p, m, in.baseline.OpenSSLMajor)
+				for _, p := range present[m] {
+					if e := matchAllow(allow, p); e != nil {
+						fmt.Fprintf(out, "      ALLOWED %s is OpenSSL core .so.%s, not this image's .so.%s\n        exemption (%s): %s\n", p, m, own, e.source, e.reason)
+						continue
+					}
+					failed = true
+					fmt.Fprintf(out, "FAIL  %s is OpenSSL core .so.%s, but this image's core is .so.%s; remove it from the image\n", p, m, own)
+				}
 			}
 		}
 	}
@@ -434,7 +455,7 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 		switch {
 		case len(modules) == 0:
 			failed = true
-			fmt.Fprintf(out, "FAIL  no FIPS provider module (fips.so) in %s; the fleet baseline is %s\n", strings.Join(providerDirs, ", "), want)
+			fmt.Fprintf(out, "FAIL  no FIPS provider module (fips.so) anywhere in the image; the fleet baseline is %s\n", want)
 		case len(modules) > 1:
 			failed = true
 			paths := make([]string, len(modules))
