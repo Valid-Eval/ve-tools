@@ -67,7 +67,12 @@ if [ -n "$OPENSSL_LINE" ]; then
       -e "s/^  openssl-minor: \"[0-9]*\"\$/  openssl-minor: \"$min\"/" "$RECIPE" > "$RENDERED"
   grep -qx "  openssl-major: \"$maj\"" "$RENDERED" && grep -qx "  openssl-minor: \"$min\"" "$RENDERED" \
     || { echo "::error::rendering $(basename "$RECIPE") at OpenSSL $OPENSSL_LINE failed"; exit 1; }
-  changed="$(diff "$RECIPE" "$RENDERED" | grep -c '^>' || true)"
+  # diff exits 1 when the files differ (expected) and 2 or more on trouble, which must not pass as
+  # "no lines changed". grep -c likewise exits 1 for zero matches and 2 on error.
+  rc=0; diff "$RECIPE" "$RENDERED" > "$WORK/render.diff" || rc=$?
+  [ "$rc" -le 1 ] || { echo "::error::diff failed (exit $rc) comparing the rendered recipe"; exit 1; }
+  rc=0; changed="$(grep -c '^>' "$WORK/render.diff")" || rc=$?
+  [ "$rc" -le 1 ] || { echo "::error::grep failed (exit $rc) counting rendered changes"; exit 1; }
   [ "$changed" -le 2 ] || { echo "::error::rendering changed $changed lines, expected at most 2"; exit 1; }
   RECIPE="$RENDERED"
   echo "=== building at OpenSSL $OPENSSL_LINE (OPENSSL_LINE) instead of the recipe's default vars ==="
