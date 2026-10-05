@@ -59,8 +59,9 @@ Structural checks cannot prove behaviour, so an image can also register a **beha
 RUN CGO_ENABLED=0 GOBIN=/usr/bin go install github.com/Valid-Eval/ve-tools/fips-invariant-check@v0.1.0
 # ...and as the LAST step of every image build, base or downstream. Run it as root, then
 # restore the image's own user (65532 on the fleet's runtime bases; use your image's own, e.g.
-# neo4j:neo4j). Production images add "-strict" (or inherit FIPS_INVARIANT_STRICT=1); builder
-# images run without it and may carry an allow file.
+# neo4j:neo4j). This is the PRODUCTION form: "-strict" (or an inherited FIPS_INVARIANT_STRICT=1).
+# In a builder stage, drop "-strict": strict mode treats any allow file as a failure, and builder
+# images may carry one.
 USER 0
 RUN --mount=type=bind,from=gobuilder,source=/usr/bin/fips-invariant-check,target=/usr/local/bin/fips-invariant-check \
     ["/usr/local/bin/fips-invariant-check", "-strict"]
