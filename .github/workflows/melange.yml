@@ -81,6 +81,53 @@ jobs:
           [ -e "$RUNNER_TEMP/stub/docker.called" ] || { echo "::error::build.sh failed before reaching docker"; exit 1; }
           [ "$rc" = 1 ] || { echo "::error::build.sh exited $rc after a mid-run failure, expected 1"; exit 1; }
           if ls -d "$RUNNER_TEMP"/melange-ws.* 2>/dev/null; then echo "::error::build.sh left its workspace behind"; exit 1; fi
+          # OPENSSL_LINE must be <major>.<minor>, rejected before any docker call.
+          OPENSSL_LINE= expect_fail "OPENSSL_LINE is set but empty" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/x"
+          for bad in 4 4.0.3 .4 4. a.b 4..0; do
+            OPENSSL_LINE="$bad" expect_fail "OPENSSL_LINE must be <major>.<minor>" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/x"
+          done
+          # A recipe without the var lines cannot be rendered: build.sh must stop, not build the default.
+          printf 'package:\n  name: x\nvars:\n  openssl-minor: "6"\n' > "$RUNNER_TEMP/novars.yaml"
+          OPENSSL_LINE=4.0 expect_fail "must define '  openssl-major" melange/build.sh "$RUNNER_TEMP/novars.yaml" amd64 "$RUNNER_TEMP/nv"
+          # With OPENSSL_LINE, melange build receives the rendered recipe at that line; without it, the
+          # recipe's own defaults. A stub docker records the vars of the recipe `melange build` was handed.
+          mkdir -p "$RUNNER_TEMP/stub2"
+          cat > "$RUNNER_TEMP/stub2/docker" <<'STUB'
+          #!/bin/sh
+          prev=
+          for a in "$@"; do
+            case "$a" in *.yaml) [ "$prev" = build ] && grep -E '^  openssl-(major|minor):' "$a" | tr -d ' \n' > "$SEEN" ;; esac
+            prev="$a"
+          done
+          case " $* " in *" keygen "*) exit 0 ;; esac
+          exit 7
+          STUB
+          chmod +x "$RUNNER_TEMP/stub2/docker"
+          for line in default 4.0; do
+            want='openssl-major:"3"openssl-minor:"6"'; ol=
+            [ "$line" = 4.0 ] && { want='openssl-major:"4"openssl-minor:"0"'; ol=4.0; }
+            rm -f "$RUNNER_TEMP/seen"
+            if [ -n "$ol" ]; then set -- env OPENSSL_LINE="$ol"; else set -- env -u OPENSSL_LINE; fi
+            SEEN="$RUNNER_TEMP/seen" PATH="$RUNNER_TEMP/stub2:$PATH" \
+              "$@" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/r-$line" >/dev/null 2>&1 || true
+            got="$(cat "$RUNNER_TEMP/seen" 2>/dev/null || true)"
+            [ "$got" = "$want" ] || { echo "::error::OPENSSL_LINE=$line: melange build got [$got], expected [$want]"; exit 1; }
+            echo "OPENSSL_LINE=$line: melange build got $got"
+          done
 
       - name: Build and test libpq-17 (amd64)
         run: melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/melange-out"
+
+  # The same recipe at OpenSSL 4.0, as an image on an OpenSSL-4-only base builds it (OPENSSL_LINE).
+  # A separate job so the two builds don't share a runner's disk.
+  build-test-openssl-4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and test libpq-17 at OpenSSL 4.0 (amd64)
+        run: OPENSSL_LINE=4.0 melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/melange-out"
