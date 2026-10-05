@@ -403,6 +403,15 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 				failed = true
 				fmt.Fprintf(out, "FAIL  OpenSSL cores of more than one major are present (.so.%s) and nothing links any of them, so the image has no single core; keep one\n", strings.Join(kept, ", .so."))
 			}
+			if own == "" { // no single own major: still show every exemption used on a present core
+				for _, m := range slices.Sorted(maps.Keys(present)) {
+					for _, p := range present[m] {
+						if e := matchAllow(allow, p); e != nil {
+							fmt.Fprintf(out, "      ALLOWED %s is OpenSSL core .so.%s\n        exemption (%s): %s\n", p, m, e.source, e.reason)
+						}
+					}
+				}
+			}
 		}
 		if own != "" && !slices.Contains(in.baseline.OpenSSLMajors, own) {
 			failed = true

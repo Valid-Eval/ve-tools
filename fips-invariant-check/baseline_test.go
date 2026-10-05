@@ -224,6 +224,14 @@ func TestEvaluateOwnMajor(t *testing.T) {
 	if failed, _ := evalOut(t, evalInput{reports: []*fileReport{sys3, sys4, good}, baseline: b, allow: allow, strict: true}); !failed {
 		t.Fatal("strict must ignore that exemption")
 	}
+	only3 := []*allowEntry{{pattern: "/usr/lib/libcrypto.so.3", reason: "builder only", source: "t:1"}}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3}, baseline: b, allow: only3}); !strings.Contains(out, "ALLOWED /usr/lib/libcrypto.so.3 is OpenSSL core .so.3") {
+		t.Fatalf("an exemption that leaves no core must still be shown (failed=%v):\n%s", failed, out)
+	}
+	both := append(only3, &allowEntry{pattern: "/usr/lib/libcrypto.so.4", reason: "builder only", source: "t:2"})
+	if _, out := evalOut(t, evalInput{reports: []*fileReport{sys3, sys4, good}, baseline: b, allow: both}); !strings.Contains(out, "ALLOWED /usr/lib/libcrypto.so.4 is OpenSSL core .so.4") {
+		t.Fatalf("every exempted core must be shown:\n%s", out)
+	}
 	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys5, good}, baseline: b}); !failed || !strings.Contains(out, "libcrypto.so.5 is not a major the fleet accepts") {
 		t.Fatalf("a lone unlinked core outside the set must fail:\n%s", out)
 	}
