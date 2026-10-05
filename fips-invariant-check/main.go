@@ -70,10 +70,11 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	verbose := fl.Bool("v", false, "also list every file that passes while linking or naming crypto")
 	strict := fl.Bool("strict", strictDefault,
 		"production mode: honour NO exemptions, and fail if any allowlist file is present (default from FIPS_INVARIANT_STRICT)")
+	baselineFile := fl.String("baseline", "", "fleet baseline file (KEY=VALUE); default: the baseline.env compiled into this binary")
 	var allowFiles multiFlag
 	fl.Var(&allowFiles, "allow", "extra allowlist file (repeatable); "+defaultAllowDir+"/*.allow inside -root is always looked for (applied normally; its mere presence fails -strict)")
 	fl.Usage = func() {
-		fmt.Fprintf(errOut, "usage: fips-invariant-check [-root DIR] [-allow FILE]... [-strict] [-v] [-- PROBE CMD ARGS...]\n")
+		fmt.Fprintf(errOut, "usage: fips-invariant-check [-root DIR] [-allow FILE]... [-strict] [-baseline FILE] [-v] [-- PROBE CMD ARGS...]\n")
 		fl.PrintDefaults()
 	}
 	if err := fl.Parse(args); err != nil {
@@ -105,7 +106,26 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	}
 	allowPaths = append(allowPaths, allowFiles...)
 
+	baselineText := embeddedBaseline
+	if *baselineFile != "" && *strict {
+		// A production image is held to the fleet baseline compiled into the checker; letting it
+		// name its own would let one image drift while staying strict-green.
+		return fatal("-baseline cannot be used with -strict: production images are checked against the compiled-in fleet baseline")
+	}
+	if *baselineFile != "" {
+		b, err := os.ReadFile(*baselineFile)
+		if err != nil {
+			return fatal("%v", err)
+		}
+		baselineText = string(b)
+	}
+	bl, err := parseBaseline(baselineText)
+	if err != nil {
+		return fatal("%v", err)
+	}
+
 	in := evalInput{strict: *strict, verbose: *verbose}
+	in.baseline = bl
 	if *strict {
 		// Runtime images set FIPS_INVARIANT_STRICT and every image built FROM them inherits it.
 		// Exemptions exist for builder-only tooling; one that reached a production image (copied
@@ -275,6 +295,7 @@ type evalInput struct {
 	strict           bool
 	strictAllowFiles []string // in strict mode: allowlist files present in the image (each a failure)
 	verbose          bool
+	baseline         *baseline // fleet OpenSSL majors and FIPS provider (nil: not checked)
 }
 
 // evaluate applies both rules to the scan results, writes the report, and returns whether the
@@ -358,10 +379,122 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 		}
 	}
 
+	// Rule 1, against the baseline. The image's own major is the one core it links or, if nothing
+	// links one, the one core present. That major must be one the fleet accepts, and a core of
+	// any other major fails even unlinked: the next package or dlopen that links it makes a second
+	// core in the process (the 2026-10-02 outage). Only a non-strict (builder) image may exempt
+	// such a file by path. With two linked cores the check above has already failed.
+	if in.baseline != nil && len(versions) <= 1 {
+		allowed := strings.Join(in.baseline.OpenSSLMajors, " ")
+		own := ""
+		if len(versions) == 1 {
+			own = versions[0]
+		} else {
+			var kept []string // majors present with at least one file not exempted
+			for _, m := range slices.Sorted(maps.Keys(present)) {
+				if slices.ContainsFunc(present[m], func(p string) bool { return matchAllow(allow, p) == nil }) {
+					kept = append(kept, m)
+				}
+			}
+			switch {
+			case len(kept) == 1:
+				own = kept[0]
+			case len(kept) > 1:
+				failed = true
+				fmt.Fprintf(out, "FAIL  OpenSSL cores of more than one major are present (.so.%s) and nothing links any of them, so the image has no single core; keep one\n", strings.Join(kept, ", .so."))
+			}
+			if own == "" { // no single own major: still show every exemption used on a present core
+				for _, m := range slices.Sorted(maps.Keys(present)) {
+					for _, p := range present[m] {
+						if e := matchAllow(allow, p); e != nil {
+							fmt.Fprintf(out, "      ALLOWED %s is OpenSSL core .so.%s\n        exemption (%s): %s\n", p, m, e.source, e.reason)
+						}
+					}
+				}
+			}
+		}
+		if own != "" && !slices.Contains(in.baseline.OpenSSLMajors, own) {
+			failed = true
+			fmt.Fprintf(out, "FAIL  the image's OpenSSL core libcrypto.so.%s is not a major the fleet accepts (%s; baseline.env FIPS_OPENSSL_MAJORS)\n", own, allowed)
+		}
+		if own != "" {
+			for _, m := range slices.Sorted(maps.Keys(present)) {
+				if m == own {
+					continue
+				}
+				for _, p := range present[m] {
+					if e := matchAllow(allow, p); e != nil {
+						fmt.Fprintf(out, "      ALLOWED %s is OpenSSL core .so.%s, not this image's .so.%s\n        exemption (%s): %s\n", p, m, own, e.source, e.reason)
+						continue
+					}
+					failed = true
+					fmt.Fprintf(out, "FAIL  %s is OpenSSL core .so.%s, but this image's core is .so.%s; remove it from the image\n", p, m, own)
+				}
+			}
+		}
+	}
+
+	// Rule 3: every FIPS provider module is an allowed build. Checked whenever the image carries
+	// a system OpenSSL or any provider module. This automates the comparison the Security Policy's
+	// Crypto Officer check makes (module name and build info), against the fleet baseline.
+	var modules []*fileReport
+	verified := map[string]bool{} // provider modules whose identity is an allowed build (rule 2 skips them)
+	for _, r := range in.reports {
+		if isProviderModule(r.Path) {
+			modules = append(modules, r)
+		}
+	}
+	// Any other module in a provider dir (legacy.so, an engine, a provider under another name)
+	// is crypto outside a validated module that the core can load on request; rule 2 skips the
+	// provider dirs, so it is judged here. Only a non-strict (builder) image may exempt it.
+	if in.baseline != nil {
+		for _, r := range in.reports {
+			if isProviderModule(r.Path) || !inDir(r.Path, providerDirs) {
+				continue
+			}
+			if e := matchAllow(allow, r.Path); e != nil {
+				fmt.Fprintf(out, "      ALLOWED %s is a loadable OpenSSL module other than a FIPS provider\n        exemption (%s): %s\n", r.Path, e.source, e.reason)
+				continue
+			}
+			failed = true
+			fmt.Fprintf(out, "FAIL  %s is a loadable OpenSSL module other than a FIPS provider (crypto outside a validated module); remove it from the image\n", r.Path)
+		}
+	}
+	if in.baseline != nil && (len(present) > 0 || len(versions) > 0 || len(modules) > 0) {
+		want := in.baseline.providersString()
+		if len(modules) == 0 {
+			failed = true
+			fmt.Fprintf(out, "FAIL  no FIPS provider module (fips.so or fips-<version>.so) anywhere in the image; the fleet baseline allows %s\n", want)
+		}
+		seen := map[string]string{} // allowed build -> first module path carrying it
+		for _, m := range modules {
+			p, ok := in.baseline.providerFor(m)
+			switch {
+			case !ok:
+				failed = true
+				fmt.Fprintf(out, "FAIL  FIPS provider %s reports name %q and build %q; the fleet baseline allows %s\n",
+					m.Path, strings.Join(m.ProviderNames, ","), strings.Join(m.ProviderBuilds, ","), want)
+			case seen[p.Buildinfo] != "":
+				failed = true
+				fmt.Fprintf(out, "FAIL  FIPS provider build %s is present twice (%s, %s); keep one\n", p.Buildinfo, seen[p.Buildinfo], m.Path)
+			default:
+				seen[p.Buildinfo] = m.Path
+				verified[m.Path] = true
+				fmt.Fprintf(out, "ok    FIPS provider %s is an allowed build: %q build %s (CMVP #%s)\n", m.Path, in.baseline.ProviderName, p.Buildinfo, p.CMVP)
+			}
+		}
+		if len(seen) > 1 {
+			fmt.Fprintln(out, "note  more than one FIPS provider build is present; which one is active depends on the runtime OpenSSL config, which this check does not evaluate")
+		}
+	}
+
 	// Rule 2: no crypto outside a validated module.
 	var violations, allowed []string
 	for _, r := range in.reports {
 		reason := embeddedReason(r)
+		if verified[r.Path] {
+			reason = "" // an allowed FIPS provider build (rule 3), wherever OPENSSL_MODULES points
+		}
 		if reason == "" {
 			if in.verbose && (len(r.NeededCores) > 0 || len(r.Markers) > 0 || r.IsGo) {
 				fmt.Fprintf(out, "info  %s passes (links %v, markers %v, go=%v)\n", r.Path, r.NeededCores, r.Markers, r.IsGo)

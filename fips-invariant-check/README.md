@@ -52,6 +52,17 @@ Structural checks cannot prove behaviour, so an image can also register a **beha
 - **Where it runs:** only inside the image (`-root /`). An explicit `-- CMD` with any other `-root` is an error (exit 2). An inherited `FIPS_INVARIANT_PROBE` is only noted as not run.
 - **Time limit:** `FIPS_INVARIANT_PROBE_TIMEOUT`, default `10m`. A probe that fails to start, exits non-zero or times out fails the run. At the deadline the probe's whole process group is killed, so a child it started cannot keep the build waiting.
 
+## Fleet baseline
+
+`baseline.env` names the OpenSSL majors a VE image may link and the FIPS provider builds it may carry. It is compiled into the binary, so each checker tag carries a baseline:
+
+- **Rule 1 (fleet part):** each image has one OpenSSL core, and its major follows that image's DU base. The image's own major is the core it links or, if nothing links one, the one core present. That major must be in `FIPS_OPENSSL_MAJORS` (`3 4` while DU moves its bases to OpenSSL 4). A core of any **other** major in the same image fails even if nothing links it yet, because the next package or `dlopen` that links it makes a second core in the process. With nothing linked, two present majors fail too. Remove the other major's files; derive which major to remove from what the image's runtime links, never hardcode it.
+- **Rule 3:** an image that carries a system OpenSSL must carry at least one FIPS provider module (`fips.so` or `fips-<version>.so`, anywhere in the image, since `OPENSSL_MODULES` can point anywhere). **Every** provider module must report exactly the name `FIPS_PROVIDER_NAME` and exactly one build listed in `FIPS_PROVIDER_BUILDS` (`BUILDINFO:CMVP` pairs, today `3.4.0-r5` for #5132 and `3.6.0-r4` for DU's opt-in #5523 `fips-3.6.0.so`). The same build twice fails. This automates the comparison the Security Policy's Crypto Officer check makes (`OSSL_PROV_PARAM_NAME`, `OSSL_PROV_PARAM_BUILDINFO`), against the fleet baseline: it proves every image ships allowed provider builds, not that a build is its certificate's. **Which provider is active** depends on the runtime OpenSSL config and is not checked here (a note is printed when more than one build is present); the behavioural probe is where that belongs. An image with no OpenSSL at all (static Go, distroless) has nothing to check. Every other module in a provider directory (`legacy.so`, an engine, an unknown module) fails. A provider module outside the provider directories is exempt from rule 2 only once rule 3 has matched it to an allowed build.
+
+The provider values start at what the fleet ships (survey of deployed images, 2026-10-03). Changing the provider builds, or the set of majors, is one edit to `baseline.env` plus a new checker tag. Renovate tracks the checker version in each image repo, so it opens the bump everywhere at once, and the builds that fail are the migration checklist.
+
+`-baseline FILE` overrides the compiled-in baseline, for trying a change before tagging it.
+
 ## Use
 
 ```dockerfile

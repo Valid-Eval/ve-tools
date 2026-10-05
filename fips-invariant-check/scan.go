@@ -305,7 +305,8 @@ var systemLibDirs = map[string]bool{
 
 // providerDirs hold OpenSSL provider modules (fips.so, legacy.so) and OpenSSL 3 engines. They
 // define crypto by design and are loaded by the system core.
-var providerDirs = []string{"/usr/lib/ossl-modules", "/usr/lib64/ossl-modules", "/usr/lib/engines-3"}
+var providerDirs = []string{"/usr/lib/ossl-modules", "/usr/lib64/ossl-modules", "/usr/lib/engines-3",
+	"/usr/lib/x86_64-linux-gnu/ossl-modules", "/usr/lib/aarch64-linux-gnu/ossl-modules"}
 
 // skipDirs are virtual filesystems, never image content. /run is not one of them: it is not a
 // mount during docker build, and what an image puts there ships with it.
@@ -324,6 +325,9 @@ type fileReport struct {
 	GoUnvalidated []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
 	GoBuildNote   string   // the settings that decided GoFIPS, for the report
 	NoCode        bool     // nothing in the file can run (separate debug info): its own code is not judged; its linked libraries still count
+	// For an OpenSSL FIPS provider module (fips.so or fips-<version>.so, anywhere): the name and build-info
+	// strings compiled into it, which rule 3 compares with the fleet baseline.
+	ProviderNames, ProviderBuilds []string
 }
 
 // scan walks root and analyzes every ELF file. Anything it cannot inspect is returned in
@@ -472,6 +476,11 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 	r.Defines = slices.Sorted(maps.Keys(seen))
 	r.Markers = slices.Sorted(maps.Keys(facts.markers))
 	r.HasSource = len(r.Markers) > 0 && facts.source
+	if isProviderModule(imagePath) {
+		if r.ProviderNames, r.ProviderBuilds, err = providerIdentity(realPath); err != nil {
+			return nil, fmt.Errorf("reading FIPS provider identity: %v", err)
+		}
+	}
 
 	// Is it Go? Decided independently of debug/buildinfo, which reports a damaged or relocated
 	// build-info blob as "not a Go executable": that would let a crypto-using Go binary skip the
@@ -824,6 +833,8 @@ func embeddedReason(r *fileReport) string {
 	if r.NoCode {
 		return "" // nothing in the file can run; only its linked libraries count (rule 1)
 	}
+	// A provider module outside providerDirs is exempted by evaluate() only once rule 3 has
+	// matched its identity to an allowed build.
 	if _, ok := systemCoreVersion(r); ok || inDir(r.Path, providerDirs) {
 		return ""
 	}
