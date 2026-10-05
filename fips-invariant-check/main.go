@@ -69,7 +69,7 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	root := fl.String("root", "/", "filesystem root to scan (an extracted image rootfs, or / inside the image)")
 	verbose := fl.Bool("v", false, "also list every file that passes while linking or naming crypto")
 	strict := fl.Bool("strict", strictDefault,
-		"production mode: honour NO exemptions, and fail if any allowlist file is present (default from FIPS_INVARIANT_STRICT)")
+		"production mode: honour NO exemptions, and fail if any allowlist file is present (on whenever FIPS_INVARIANT_STRICT is; cannot be turned off by the flag)")
 	baselineFile := fl.String("baseline", "", "fleet baseline file (KEY=VALUE); default: the baseline.env compiled into this binary")
 	var allowFiles multiFlag
 	fl.Var(&allowFiles, "allow", "extra allowlist file (repeatable); "+defaultAllowDir+"/*.allow inside -root is always looked for (applied normally; its mere presence fails -strict)")
@@ -79,6 +79,11 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	}
 	if err := fl.Parse(args); err != nil {
 		return 2
+	}
+	// An inherited FIPS_INVARIANT_STRICT is a floor: a downstream RUN cannot opt out with
+	// -strict=false, or an exemption copied into a production image would apply again.
+	if strictDefault && !*strict {
+		return fatal("-strict=false cannot override FIPS_INVARIANT_STRICT=%s: production images stay strict", getenv("FIPS_INVARIANT_STRICT"))
 	}
 
 	rootAbs, err := resolveRoot(*root)
@@ -100,9 +105,12 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	// exemptions only if it keeps the base's files. Glob only fails on a malformed pattern, and a
 	// -root containing glob metacharacters would make it silently match nothing, so read the
 	// directory instead.
-	allowPaths, err := allowFilesIn(rootAbs, defaultAllowDir)
+	allowPaths, oddAllow, err := allowFilesIn(rootAbs, defaultAllowDir)
 	if err != nil {
 		return fatal("%v", err)
+	}
+	if len(oddAllow) > 0 && !*strict {
+		return fatal("allowlist entry is not a regular file: %s", strings.Join(oddAllow, ", "))
 	}
 	allowPaths = append(allowPaths, allowFiles...)
 
@@ -133,6 +141,9 @@ func run(args []string, getenv func(string) string, out, errOut io.Writer) int {
 		for _, p := range allowPaths {
 			in.strictAllowFiles = append(in.strictAllowFiles, imagePath(rootAbs, p))
 		}
+		// A non-regular *.allow (directory, FIFO) grants nothing, but under fail-closed it is
+		// still an exemption file present in a production image.
+		in.strictAllowFiles = append(in.strictAllowFiles, oddAllow...)
 	} else {
 		for _, name := range allowPaths {
 			entries, err := loadAllowFile(name)
@@ -198,23 +209,23 @@ func resolveRoot(root string) (string, error) {
 	return real, nil
 }
 
-// allowFilesIn lists the *.allow files in the in-image directory dir under root. The directory and
+// allowFilesIn lists the *.allow files in the in-image directory dir under root, and separately the
+// in-image paths of *.allow entries that are not regular files (never opened: a FIFO would block). The directory and
 // each file are resolved INSIDE the image (an absolute symlink target is relative to root, not to
 // the host), and a dangling link is an error: following it on the host would read the wrong
 // file, or silently find none.
-func allowFilesIn(root, dir string) ([]string, error) {
+func allowFilesIn(root, dir string) (out, odd []string, err error) {
 	real, err := resolveInRoot(root, dir)
 	if err != nil {
-		return nil, fmt.Errorf("allowlist directory: %v", err)
+		return nil, nil, fmt.Errorf("allowlist directory: %v", err)
 	}
 	if real == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	entries, err := os.ReadDir(real)
 	if err != nil {
-		return nil, fmt.Errorf("reading allowlist directory %s: %v", dir, err)
+		return nil, nil, fmt.Errorf("reading allowlist directory %s: %v", dir, err)
 	}
-	var out []string
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".allow") {
 			continue
@@ -223,17 +234,19 @@ func allowFilesIn(root, dir string) ([]string, error) {
 		// (x.allow -> /opt/vendor/x.allow), which the host would otherwise follow.
 		host, err := resolveInRoot(root, path.Join(dir, e.Name()))
 		if err != nil {
-			return nil, fmt.Errorf("allowlist file: %v", err)
+			return nil, nil, fmt.Errorf("allowlist file: %v", err)
 		}
 		st, err := os.Stat(host)
 		if err != nil {
-			return nil, fmt.Errorf("allowlist file %s: %v", path.Join(dir, e.Name()), err)
+			return nil, nil, fmt.Errorf("allowlist file %s: %v", path.Join(dir, e.Name()), err)
 		}
 		if st.Mode().IsRegular() {
 			out = append(out, host)
+		} else {
+			odd = append(odd, path.Join(dir, e.Name()))
 		}
 	}
-	return out, nil
+	return out, odd, nil
 }
 
 // resolveInRoot returns the host path of in-image path p under root, following symlinks with

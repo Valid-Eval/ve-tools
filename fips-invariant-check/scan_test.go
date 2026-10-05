@@ -29,7 +29,16 @@ func TestEmbeddedReason(t *testing.T) {
 		// Boundaries of the stripped-copy branch: source paths in a file that links the system
 		// core are its headers/asserts, not a second copy; a Go binary is judged by the Go rule.
 		{"source paths but links the system core", fileReport{Path: "/usr/lib/ruby/openssl.so", NeededCores: []string{"libcrypto.so.3"}, Markers: []string{"OpenSSL 3.6.4"}, HasSource: true}, ""},
-		{"Go binary with source paths is judged by the Go rule", fileReport{Path: "/usr/bin/svc", IsGo: true, GoFIPS: true, GoCrypto: true, Markers: []string{"BoringSSL"}, HasSource: true}, ""},
+		// cgo can link a static C crypto library into a Go binary; the Go rules read only Go function
+		// names, so the stripped-copy rule applies to Go binaries too, on either FIPS route.
+		{"Go binary with a stripped static C crypto library", fileReport{Path: "/usr/bin/svc", IsGo: true, GoFIPS: true, GoCrypto: true, Markers: []string{"BoringSSL"}, HasSource: true}, "stripped embedded copy"},
+		{"Go binary with markers but no source paths", fileReport{Path: "/usr/bin/svc", IsGo: true, GoFIPS: true, GoCrypto: true, Markers: []string{"OpenSSL 3.5.1"}}, ""},
+		{"libsodium", fileReport{Path: "/usr/lib/libsodium.so.23", Soname: "libsodium.so.23"}, "libsodium"},
+		{"Botan", fileReport{Path: "/usr/lib/libbotan-3.so.6", Soname: "libbotan-3.so.6"}, "Botan"},
+		{"Crypto++", fileReport{Path: "/usr/lib/libcrypto++.so.8", Soname: "libcrypto++.so.8"}, "Crypto++"},
+		{"libtomcrypt", fileReport{Path: "/usr/lib/libtomcrypt.so.1", Soname: "libtomcrypt.so.1"}, "libtomcrypt"},
+		{"static Mbed TLS by its symbols", fileReport{Path: "/usr/bin/app", Defines: []string{"mbedtls_ctr_drbg_seed (Mbed TLS)"}}, "defines its own mbedtls_ctr_drbg_seed"},
+		{"libcrypto.so.3 is not Crypto++", fileReport{Path: "/usr/lib/libcrypto.so.3", Soname: "libcrypto.so.3"}, ""},
 		{"independent stack by soname, even in a system dir", fileReport{Path: "/usr/lib/libwolfssl.so.42", Soname: "libwolfssl.so.42"}, "wolfSSL"},
 		{"Mbed TLS crypto soname", fileReport{Path: "/usr/lib/libmbedcrypto.so.16", Soname: "libmbedcrypto.so.16"}, "Mbed TLS"},
 		{"vendored libcrypto in a wheel", fileReport{Path: "/opt/appenv/lib/foo.libs/libcrypto-1a2b3c4d.so.3", Soname: "libcrypto-1a2b3c4d.so.3"}, "vendored OpenSSL"},

@@ -127,13 +127,29 @@ func TestRunGoCryptoBinaryFails(t *testing.T) {
 	}
 }
 
+// /proc, /sys and /dev are skipped only when scanning inside the image (-root /), where they are
+// kernel mounts. In an extracted rootfs they are ordinary directories and a file there is judged.
 func TestRunSkipsVirtualFilesystems(t *testing.T) {
-	root := fixtureRoot(t)
-	os.MkdirAll(filepath.Join(root, "proc/1"), 0o755)
-	os.WriteFile(filepath.Join(root, "proc/1/exe"), append([]byte("\x7fELF"), make([]byte, 100)...), 0o644)
-	code, out := runWith(t, nil, "-root", root)
-	if code != 0 || strings.Contains(out, "/proc") {
-		t.Fatalf("/proc must not be scanned, got %d:\n%s", code, out)
+	withCrypto, _ := goFixtures(t)
+	data, _ := os.ReadFile(withCrypto)
+	for _, d := range []string{"proc/1", "sys/x", "dev/x"} {
+		root := fixtureRoot(t)
+		os.MkdirAll(filepath.Join(root, d), 0o755)
+		os.WriteFile(filepath.Join(root, d, "exe"), data, 0o755)
+		if code, out := runWith(t, nil, "-root", root); code != 1 || !strings.Contains(out, "/"+d+"/exe") {
+			t.Fatalf("in an extracted rootfs /%s must be scanned, got %d:\n%s", d, code, out)
+		}
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved := inImageRoot
+		inImageRoot = real
+		code, out := runWith(t, nil, "-root", root)
+		inImageRoot = saved
+		if code != 0 || strings.Contains(out, "/"+d) {
+			t.Fatalf("inside the image /%s must not be scanned, got %d:\n%s", d, code, out)
+		}
 	}
 }
 

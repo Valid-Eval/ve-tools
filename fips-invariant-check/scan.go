@@ -33,6 +33,19 @@ var cryptoSymbols = map[string]bool{
 	"hc_EVP_DigestInit_ex": true,
 }
 
+// otherCryptoSymbols are public entry points of independent (non-OpenSSL) crypto libraries. A file
+// that DEFINES one carries that library compiled in (statically linked); its own soname, when it
+// is a shared copy, is caught by otherCryptoLibs. Symbols only: a stripped static copy is a known gap.
+var otherCryptoSymbols = map[string]string{
+	"mbedtls_ctr_drbg_seed": "Mbed TLS", "mbedtls_md_setup": "Mbed TLS", "mbedtls_cipher_setup": "Mbed TLS",
+	"wolfSSL_Init": "wolfSSL", "wc_InitRng": "wolfSSL", "wc_RNG_GenerateBlock": "wolfSSL",
+	"nettle_sha256_init": "Nettle", "nettle_aes128_encrypt": "Nettle", "nettle_yarrow256_random": "Nettle",
+	"gcry_md_open": "libgcrypt", "gcry_cipher_open": "libgcrypt", "gcry_randomize": "libgcrypt",
+	"sodium_init": "libsodium", "randombytes_buf": "libsodium",
+	"botan_rng_init": "Botan",
+	"register_prng":  "libtomcrypt", "rng_make_prng": "libtomcrypt",
+}
+
 // prefixedCryptoSymbol matches the version-prefixed symbols Rust's crypto crates give their
 // bundled C/assembly, so two versions can link into one binary: aws-lc-rs (the rustls default
 // provider) builds AWS-LC as aws_lc_<maj>_<min>_<patch>_RAND_bytes and so on, and ring prefixes
@@ -63,6 +76,10 @@ var otherCryptoLibs = []struct {
 	{regexp.MustCompile(`^libgnutls\.so(\.|$)`), "GnuTLS"},
 	{regexp.MustCompile(`^libmbed(crypto|tls|x509)\.so(\.|$)`), "Mbed TLS"},
 	{regexp.MustCompile(`^libwolfssl\.so(\.|$)`), "wolfSSL"},
+	{regexp.MustCompile(`^libsodium\.so(\.|$)`), "libsodium"},
+	{regexp.MustCompile(`^libbotan-[0-9]+\.so(\.|$)`), "Botan"},
+	{regexp.MustCompile(`^libcrypto\+\+\.so(\.|$)|^libcryptopp\.so(\.|$)`), "Crypto++"},
+	{regexp.MustCompile(`^libtomcrypt\.so(\.|$)`), "libtomcrypt"},
 }
 
 // goCrypto reads a Go binary's function table (.gopclntab, which the runtime needs and stripping
@@ -304,12 +321,20 @@ var systemLibDirs = map[string]bool{
 }
 
 // providerDirs hold OpenSSL provider modules (fips.so, legacy.so) and OpenSSL 3 engines. They
-// define crypto by design and are loaded by the system core.
-var providerDirs = []string{"/usr/lib/ossl-modules", "/usr/lib64/ossl-modules", "/usr/lib/engines-3",
-	"/usr/lib/x86_64-linux-gnu/ossl-modules", "/usr/lib/aarch64-linux-gnu/ossl-modules"}
+// define crypto by design and are loaded by the system core. Derived from systemLibDirs, so a
+// multiarch or lib64 layout is covered the same way as /usr/lib.
+var providerDirs = func() []string {
+	var d []string
+	for lib := range systemLibDirs {
+		d = append(d, lib+"/ossl-modules", lib+"/engines-3")
+	}
+	slices.Sort(d)
+	return d
+}()
 
-// skipDirs are virtual filesystems, never image content. /run is not one of them: it is not a
-// mount during docker build, and what an image puts there ships with it.
+// skipDirs are virtual filesystems, never image content, when scanning inside the image (-root /).
+// In an extracted rootfs they are ordinary directories and are scanned. /run is not one of them:
+// it is not a mount during docker build, and what an image puts there ships with it.
 var skipDirs = map[string]bool{"/proc": true, "/sys": true, "/dev": true}
 
 type fileReport struct {
@@ -348,7 +373,7 @@ func scan(root, self string) (reports []*fileReport, unscanned []string, err err
 			return nil
 		}
 		if d.IsDir() {
-			if skipDirs[ip] {
+			if skipDirs[ip] && root == inImageRoot {
 				return fs.SkipDir
 			}
 			return nil
@@ -361,7 +386,7 @@ func scan(root, self string) (reports []*fileReport, unscanned []string, err err
 			unscanned = append(unscanned, fmt.Sprintf("%s: %v", ip, err))
 			return nil
 		}
-		if !isELFCandidate(d.Name(), info.Size()) {
+		if !isELFCandidate(info.Size()) {
 			return nil
 		}
 		r, err := analyze(real, ip)
@@ -391,8 +416,9 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 		return nil, err
 	}
 	defer fh.Close()
-	var magic [4]byte
-	if _, err := io.ReadFull(fh, magic[:]); err != nil || string(magic[:]) != "\x7fELF" {
+	if ok, err := hasELFMagic(fh); err != nil {
+		return nil, fmt.Errorf("reading ELF magic: %v", err)
+	} else if !ok {
 		return nil, nil
 	}
 	f, err := elf.NewFile(fh)
@@ -466,6 +492,8 @@ func analyze(realPath, imagePath string) (*fileReport, error) {
 			switch {
 			case cryptoSymbols[s.Name]:
 				seen[s.Name] = true
+			case otherCryptoSymbols[s.Name] != "":
+				seen[s.Name+" ("+otherCryptoSymbols[s.Name]+")"] = true
 			case strings.HasPrefix(s.Name, "ring_core_") && prefixedCryptoSymbol.MatchString(s.Name):
 				seen["ring_core_* (ring)"] = true // one label for ring's hundreds of primitives
 			case prefixedCryptoSymbol.MatchString(s.Name):
@@ -849,7 +877,9 @@ func embeddedReason(r *fileReport) string {
 	if len(r.Defines) > 0 {
 		return "defines its own " + strings.Join(r.Defines, ", ") + markerSuffix(r)
 	}
-	if r.HasSource && len(r.NeededCores) == 0 && !r.IsGo {
+	// Go binaries too: cgo can link a static C library (e.g. librdkafka's OpenSSL), which the Go
+	// rules below, reading only Go function names, never see.
+	if r.HasSource && len(r.NeededCores) == 0 {
 		return "carries a compiled-in crypto library (" + strings.Join(r.Markers, ", ") + ", with its source paths) and links no system libcrypto/libssl (stripped embedded copy)"
 	}
 	if r.IsGo && r.GoFIPS && len(r.GoUnvalidated) > 0 {
@@ -868,7 +898,21 @@ func markerSuffix(r *fileReport) string {
 	return " (" + strings.Join(r.Markers, ", ") + ")"
 }
 
-// isELFCandidate cheaply skips files that cannot be ELF objects.
-func isELFCandidate(name string, size int64) bool {
-	return size >= 64 && !strings.HasSuffix(name, ".py") // .py: trivially common, never ELF
+// hasELFMagic reports whether r starts with the ELF magic. A file shorter than the magic is simply
+// not ELF; any other read error is returned, so the file is reported as uninspected, not dropped.
+func hasELFMagic(r io.Reader) (bool, error) {
+	var magic [4]byte
+	if _, err := io.ReadFull(r, magic[:]); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return false, err
+	}
+	return string(magic[:]) == "\x7fELF", nil
+}
+
+// isELFCandidate cheaply skips files too small to hold an ELF header (52 bytes for ELF32). It
+// never decides by name: analyze reads the magic.
+func isELFCandidate(size int64) bool {
+	return size >= 52
 }
