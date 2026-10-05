@@ -325,7 +325,7 @@ type fileReport struct {
 	GoUnvalidated []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
 	GoBuildNote   string   // the settings that decided GoFIPS, for the report
 	NoCode        bool     // nothing in the file can run (separate debug info): its own code is not judged; its linked libraries still count
-	// For an OpenSSL FIPS provider module (fips.so in a provider dir): the name and build-info
+	// For an OpenSSL FIPS provider module (fips.so or fips-<version>.so, anywhere): the name and build-info
 	// strings compiled into it, which rule 3 compares with the fleet baseline.
 	ProviderNames, ProviderBuilds []string
 }
@@ -833,9 +833,9 @@ func embeddedReason(r *fileReport) string {
 	if r.NoCode {
 		return "" // nothing in the file can run; only its linked libraries count (rule 1)
 	}
-	// A fips.so is exempt wherever it is (OPENSSL_MODULES can point anywhere), matching rule 3,
-	// which holds every fips.so in the image to the baseline's provider name and build.
-	if _, ok := systemCoreVersion(r); ok || inDir(r.Path, providerDirs) || isProviderModule(r.Path) {
+	// A provider module outside providerDirs is exempted by evaluate() only once rule 3 has
+	// matched its identity to an allowed build.
+	if _, ok := systemCoreVersion(r); ok || inDir(r.Path, providerDirs) {
 		return ""
 	}
 	for _, l := range otherCryptoLibs {

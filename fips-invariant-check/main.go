@@ -425,17 +425,18 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 		}
 	}
 
-	// Rule 3: one FIPS provider, and it is the baseline's. Checked whenever the image carries a
-	// system OpenSSL or any fips.so; this is the Security Policy's Crypto Officer check (module
-	// name and build info) made automatic.
+	// Rule 3: every FIPS provider module is an allowed build. Checked whenever the image carries
+	// a system OpenSSL or any provider module. This automates the comparison the Security Policy's
+	// Crypto Officer check makes (module name and build info), against the fleet baseline.
 	var modules []*fileReport
+	verified := map[string]bool{} // provider modules whose identity is an allowed build (rule 2 skips them)
 	for _, r := range in.reports {
 		if isProviderModule(r.Path) {
 			modules = append(modules, r)
 		}
 	}
-	// Any other module beside it (legacy.so, an engine, a second provider under another name)
-	// is crypto outside the validated module that the core can load on request; rule 2 skips the
+	// Any other module in a provider dir (legacy.so, an engine, a provider under another name)
+	// is crypto outside a validated module that the core can load on request; rule 2 skips the
 	// provider dirs, so it is judged here. Only a non-strict (builder) image may exempt it.
 	if in.baseline != nil {
 		for _, r := range in.reports {
@@ -443,33 +444,38 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 				continue
 			}
 			if e := matchAllow(allow, r.Path); e != nil {
-				fmt.Fprintf(out, "      ALLOWED %s is a loadable OpenSSL module other than the FIPS provider\n        exemption (%s): %s\n", r.Path, e.source, e.reason)
+				fmt.Fprintf(out, "      ALLOWED %s is a loadable OpenSSL module other than a FIPS provider\n        exemption (%s): %s\n", r.Path, e.source, e.reason)
 				continue
 			}
 			failed = true
-			fmt.Fprintf(out, "FAIL  %s is a loadable OpenSSL module other than the FIPS provider (crypto outside the validated module); remove it from the image\n", r.Path)
+			fmt.Fprintf(out, "FAIL  %s is a loadable OpenSSL module other than a FIPS provider (crypto outside a validated module); remove it from the image\n", r.Path)
 		}
 	}
 	if in.baseline != nil && (len(present) > 0 || len(versions) > 0 || len(modules) > 0) {
-		want := fmt.Sprintf("%q build %s (CMVP #%s)", in.baseline.ProviderName, in.baseline.ProviderBuildinfo, in.baseline.CMVP)
-		switch {
-		case len(modules) == 0:
+		want := in.baseline.providersString()
+		if len(modules) == 0 {
 			failed = true
-			fmt.Fprintf(out, "FAIL  no FIPS provider module (fips.so) anywhere in the image; the fleet baseline is %s\n", want)
-		case len(modules) > 1:
-			failed = true
-			paths := make([]string, len(modules))
-			for i, m := range modules {
-				paths[i] = m.Path
+			fmt.Fprintf(out, "FAIL  no FIPS provider module (fips.so or fips-<version>.so) anywhere in the image; the fleet baseline allows %s\n", want)
+		}
+		seen := map[string]string{} // allowed build -> first module path carrying it
+		for _, m := range modules {
+			p, ok := in.baseline.providerFor(m)
+			switch {
+			case !ok:
+				failed = true
+				fmt.Fprintf(out, "FAIL  FIPS provider %s reports name %q and build %q; the fleet baseline allows %s\n",
+					m.Path, strings.Join(m.ProviderNames, ","), strings.Join(m.ProviderBuilds, ","), want)
+			case seen[p.Buildinfo] != "":
+				failed = true
+				fmt.Fprintf(out, "FAIL  FIPS provider build %s is present twice (%s, %s); keep one\n", p.Buildinfo, seen[p.Buildinfo], m.Path)
+			default:
+				seen[p.Buildinfo] = m.Path
+				verified[m.Path] = true
+				fmt.Fprintf(out, "ok    FIPS provider %s is an allowed build: %q build %s (CMVP #%s)\n", m.Path, in.baseline.ProviderName, p.Buildinfo, p.CMVP)
 			}
-			fmt.Fprintf(out, "FAIL  more than one FIPS provider module: %s; the fleet uses exactly one, %s\n", strings.Join(paths, ", "), want)
-		case !slices.Equal(modules[0].ProviderNames, []string{in.baseline.ProviderName}) ||
-			!slices.Equal(modules[0].ProviderBuilds, []string{in.baseline.ProviderBuildinfo}):
-			failed = true
-			fmt.Fprintf(out, "FAIL  FIPS provider %s reports name %q and build %q; the fleet baseline is %s\n",
-				modules[0].Path, strings.Join(modules[0].ProviderNames, ","), strings.Join(modules[0].ProviderBuilds, ","), want)
-		default:
-			fmt.Fprintf(out, "ok    FIPS provider matches the fleet baseline: %s, %s\n", modules[0].Path, want)
+		}
+		if len(seen) > 1 {
+			fmt.Fprintln(out, "note  more than one FIPS provider build is present; which one is active depends on the runtime OpenSSL config, which this check does not evaluate")
 		}
 	}
 
@@ -477,6 +483,9 @@ func evaluate(out io.Writer, in evalInput) (failed bool) {
 	var violations, allowed []string
 	for _, r := range in.reports {
 		reason := embeddedReason(r)
+		if verified[r.Path] {
+			reason = "" // an allowed FIPS provider build (rule 3), wherever OPENSSL_MODULES points
+		}
 		if reason == "" {
 			if in.verbose && (len(r.NeededCores) > 0 || len(r.Markers) > 0 || r.IsGo) {
 				fmt.Fprintf(out, "info  %s passes (links %v, markers %v, go=%v)\n", r.Path, r.NeededCores, r.Markers, r.IsGo)

@@ -9,7 +9,8 @@ import (
 )
 
 func testBaseline() *baseline {
-	return &baseline{OpenSSLMajors: []string{"3", "4"}, ProviderName: "Chainguard FIPS Provider for OpenSSL", ProviderBuildinfo: "3.4.0-r5", CMVP: "5132"}
+	return &baseline{OpenSSLMajors: []string{"3", "4"}, ProviderName: "Chainguard FIPS Provider for OpenSSL",
+		Providers: []providerBuild{{"3.4.0-r5", "5132"}, {"3.6.0-r4", "5523"}}}
 }
 
 func TestEmbeddedBaselineParses(t *testing.T) {
@@ -17,14 +18,14 @@ func TestEmbeddedBaselineParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the compiled-in baseline.env must parse: %v", err)
 	}
-	if len(b.OpenSSLMajors) == 0 || b.ProviderName == "" || b.ProviderBuildinfo == "" || b.CMVP == "" {
+	if len(b.OpenSSLMajors) == 0 || b.ProviderName == "" || len(b.Providers) == 0 {
 		t.Fatalf("incomplete embedded baseline: %+v", b)
 	}
 }
 
 func TestParseBaseline(t *testing.T) {
-	b, err := parseBaseline("# c\nFIPS_OPENSSL_MAJORS=\"3 4\"\nFIPS_PROVIDER_NAME=\"X FIPS Provider for OpenSSL\"\nFIPS_PROVIDER_BUILDINFO=3.6.0-r4\nFIPS_PROVIDER_CMVP=5523\n")
-	if err != nil || !slices.Equal(b.OpenSSLMajors, []string{"3", "4"}) || b.ProviderName != "X FIPS Provider for OpenSSL" || b.ProviderBuildinfo != "3.6.0-r4" || b.CMVP != "5523" {
+	b, err := parseBaseline("# c\nFIPS_OPENSSL_MAJORS=\"3 4\"\nFIPS_PROVIDER_NAME=\"X FIPS Provider for OpenSSL\"\nFIPS_PROVIDER_BUILDS=\"3.4.0-r5:5132 3.6.0-r4:5523\"\n")
+	if err != nil || !slices.Equal(b.OpenSSLMajors, []string{"3", "4"}) || b.ProviderName != "X FIPS Provider for OpenSSL" || !slices.Equal(b.Providers, []providerBuild{{"3.4.0-r5", "5132"}, {"3.6.0-r4", "5523"}}) {
 		t.Fatalf("got %+v, %v", b, err)
 	}
 	if _, err := parseBaseline("FIPS_OPENSSL_MAJORS=3\n"); err == nil || !strings.Contains(err.Error(), "missing") {
@@ -45,8 +46,11 @@ func TestProviderIdentityReadsCompiledStrings(t *testing.T) {
 	if err != nil || !slices.Equal(names, []string{"Chainguard FIPS Provider for OpenSSL"}) || !slices.Equal(builds, []string{"3.4.0-r5"}) {
 		t.Fatalf("names %v builds %v err %v", names, builds, err)
 	}
-	if !isProviderModule("/usr/lib/ossl-modules/fips.so") || isProviderModule("/usr/lib/ossl-modules/legacy.so") {
-		t.Fatal("isProviderModule must accept fips.so and nothing else")
+	for p, want := range map[string]bool{"/usr/lib/ossl-modules/fips.so": true, "/usr/lib/ossl-modules/fips-3.6.0.so": true,
+		"/usr/lib/ossl-modules/legacy.so": false, "/usr/lib/ossl-modules/fips-x.so": false, "/usr/lib/ossl-modules/myfips.so": false} {
+		if isProviderModule(p) != want {
+			t.Errorf("isProviderModule(%s) = %v, want %v", p, !want, want)
+		}
 	}
 }
 
@@ -60,7 +64,7 @@ func TestEvaluateFleetBaseline(t *testing.T) {
 	second := &fileReport{Path: "/usr/lib64/ossl-modules/fips.so", ProviderNames: good.ProviderNames, ProviderBuilds: good.ProviderBuilds}
 	b := testBaseline()
 
-	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, good}, baseline: b}); failed || !strings.Contains(out, "ok    FIPS provider matches the fleet baseline") {
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, good}, baseline: b}); failed || !strings.Contains(out, "ok    FIPS provider /usr/lib/ossl-modules/fips.so is an allowed build") {
 		t.Fatalf("baseline core and provider must pass:\n%s", out)
 	}
 	if failed, out := evalOut(t, evalInput{reports: []*fileReport{ssl4, good}, baseline: b}); failed {
@@ -74,8 +78,8 @@ func TestEvaluateFleetBaseline(t *testing.T) {
 	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3}, baseline: b}); !failed || !strings.Contains(out, "no FIPS provider module") {
 		t.Fatalf("OpenSSL without a provider must fail:\n%s", out)
 	}
-	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, good, second}, baseline: b}); !failed || !strings.Contains(out, "more than one FIPS provider module") {
-		t.Fatalf("two providers must fail:\n%s", out)
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, good, second}, baseline: b}); !failed || !strings.Contains(out, "build 3.4.0-r5 is present twice") {
+		t.Fatalf("two copies of one provider build must fail:\n%s", out)
 	}
 	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, r4}, baseline: b}); !failed || !strings.Contains(out, `build "3.4.0-r4"`) {
 		t.Fatalf("a provider build other than the baseline's must fail:\n%s", out)
@@ -90,14 +94,19 @@ func TestEvaluateFleetBaseline(t *testing.T) {
 }
 
 func TestParseBaselineRejectsAmbiguity(t *testing.T) {
-	ok := "FIPS_OPENSSL_MAJORS=3\nFIPS_PROVIDER_NAME=n\nFIPS_PROVIDER_BUILDINFO=b\nFIPS_PROVIDER_CMVP=1\n"
+	ok := "FIPS_OPENSSL_MAJORS=3\nFIPS_PROVIDER_NAME=n\nFIPS_PROVIDER_BUILDS=1.2.3-r4:1\n"
 	for name, s := range map[string]string{
-		"unknown key":     ok + "FIPS_OTHER=1\n",
-		"duplicate key":   ok + "FIPS_OPENSSL_MAJORS=4\n",
-		"non-numeric":     strings.Replace(ok, "=3", "=3 x", 1),
-		"duplicate major": strings.Replace(ok, "=3", "=\"3 3\"", 1),
-		"empty majors":    strings.Replace(ok, "=3", "=\"\"", 1),
-		"old key name":    strings.Replace(ok, "FIPS_OPENSSL_MAJORS", "FIPS_OPENSSL_MAJOR", 1),
+		"unknown key":      ok + "FIPS_OTHER=1\n",
+		"duplicate key":    ok + "FIPS_OPENSSL_MAJORS=4\n",
+		"non-numeric":      strings.Replace(ok, "=3", "=3 x", 1),
+		"duplicate major":  strings.Replace(ok, "=3", "=\"3 3\"", 1),
+		"empty majors":     strings.Replace(ok, "=3", "=\"\"", 1),
+		"old key name":     strings.Replace(ok, "FIPS_OPENSSL_MAJORS", "FIPS_OPENSSL_MAJOR", 1),
+		"old provider key": ok + "FIPS_PROVIDER_BUILDINFO=1.2.3-r4\n",
+		"build no cmvp":    strings.Replace(ok, "1.2.3-r4:1", "1.2.3-r4", 1),
+		"bad build":        strings.Replace(ok, "1.2.3-r4:1", "1.2.3:1", 1),
+		"dup build":        strings.Replace(ok, "1.2.3-r4:1", "\"1.2.3-r4:1 1.2.3-r4:2\"", 1),
+		"no builds":        strings.Replace(ok, "1.2.3-r4:1", "\"\"", 1),
 	} {
 		if _, err := parseBaseline(s); err == nil {
 			t.Errorf("%s must be an error", name)
@@ -112,7 +121,7 @@ func TestEvaluateBaselineHardening(t *testing.T) {
 	sys3 := &fileReport{Path: "/usr/lib/libcrypto.so.3", Soname: "libcrypto.so.3"}
 	sys4 := &fileReport{Path: "/usr/lib/libcrypto.so.4", Soname: "libcrypto.so.4"}
 	ssl3 := &fileReport{Path: "/usr/lib/python3.14/lib-dynload/_ssl.so", NeededCores: []string{"libcrypto.so.3"}}
-	good := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{b.ProviderBuildinfo}}
+	good := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{"3.4.0-r5"}}
 
 	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, sys4, ssl3, good}, baseline: b}); !failed || !strings.Contains(out, "/usr/lib/libcrypto.so.4 is OpenSSL core .so.4, but this image's core is .so.3") {
 		t.Fatalf("an unlinked core of another major must fail:\n%s", out)
@@ -125,7 +134,7 @@ func TestEvaluateBaselineHardening(t *testing.T) {
 		t.Fatal("strict must ignore that exemption")
 	}
 	multi := &fileReport{Path: "/usr/lib/x86_64-linux-gnu/ossl-modules/fips.so", ProviderNames: good.ProviderNames, ProviderBuilds: good.ProviderBuilds}
-	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, good, multi}, baseline: b}); !failed || !strings.Contains(out, "more than one FIPS provider module") {
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, ssl3, good, multi}, baseline: b}); !failed || !strings.Contains(out, "build 3.4.0-r5 is present twice") {
 		t.Fatalf("a second fips.so anywhere must count:\n%s", out)
 	}
 	wrongName := &fileReport{Path: good.Path, ProviderNames: []string{"Other FIPS Provider for OpenSSL"}, ProviderBuilds: good.ProviderBuilds}
@@ -161,9 +170,9 @@ func TestRunBaselineFlag(t *testing.T) {
 func TestOtherProviderModulesAndAdjacentStrings(t *testing.T) {
 	b := testBaseline()
 	sys3 := &fileReport{Path: "/usr/lib/libcrypto.so.3", Soname: "libcrypto.so.3"}
-	good := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{b.ProviderBuildinfo}}
+	good := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{"3.4.0-r5"}}
 	legacy := &fileReport{Path: "/usr/lib/ossl-modules/legacy.so"}
-	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, good, legacy}, baseline: b}); !failed || !strings.Contains(out, "legacy.so is a loadable OpenSSL module other than the FIPS provider") {
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, good, legacy}, baseline: b}); !failed || !strings.Contains(out, "legacy.so is a loadable OpenSSL module other than a FIPS provider") {
 		t.Fatalf("legacy.so must fail:\n%s", out)
 	}
 	allow := []*allowEntry{{pattern: "/usr/lib/ossl-modules/legacy.so", reason: "builder only", source: "t:1"}}
@@ -187,7 +196,7 @@ func TestEvaluateOwnMajor(t *testing.T) {
 	sys4 := &fileReport{Path: "/usr/lib/libcrypto.so.4", Soname: "libcrypto.so.4"}
 	sys5 := &fileReport{Path: "/usr/lib/libcrypto.so.5", Soname: "libcrypto.so.5"}
 	ssl4 := &fileReport{Path: "/usr/lib/python3.14/lib-dynload/_ssl.so", NeededCores: []string{"libcrypto.so.4"}}
-	good := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{b.ProviderBuildinfo}}
+	good := &fileReport{Path: "/usr/lib/ossl-modules/fips.so", ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{"3.4.0-r5"}}
 
 	// An OpenSSL-4-only image (DU python-fips v3.14.8) passes; the same image carrying an unused
 	// .so.3 fails, now that 3 is the other major.
@@ -220,28 +229,52 @@ func TestEvaluateOwnMajor(t *testing.T) {
 	}
 }
 
-// Rules 2 and 3 agree on what the provider module is: a fips.so outside the usual provider dirs
-// is not "embedded crypto" (rule 3 holds it to the baseline identity), while any other file with
-// the same content still is.
-func TestProviderModuleExemptFromRule2Anywhere(t *testing.T) {
-	stripped := func(p string) *fileReport {
-		return &fileReport{Path: p, Markers: []string{"OpenSSL 3.4.0"}, HasSource: true}
-	}
-	if r := embeddedReason(stripped("/opt/openssl/lib/ossl-modules/fips.so")); r != "" {
-		t.Fatalf("a fips.so outside providerDirs must not fail rule 2, got %q", r)
-	}
-	if r := embeddedReason(stripped("/opt/openssl/lib/ossl-modules/libfoo.so")); r == "" {
-		t.Fatal("the same content under another name must still fail rule 2")
-	}
+// Rules 2 and 3 agree on what the provider module is: a provider module outside the usual
+// provider dirs is exempt from rule 2 only once rule 3 has matched it to an allowed build.
+func TestProviderModuleRule2ExemptionNeedsAllowedIdentity(t *testing.T) {
 	b := testBaseline()
 	sys3 := &fileReport{Path: "/usr/lib/libcrypto.so.3", Soname: "libcrypto.so.3"}
-	moved := stripped("/opt/openssl/lib/ossl-modules/fips.so")
-	moved.ProviderNames, moved.ProviderBuilds = []string{b.ProviderName}, []string{b.ProviderBuildinfo}
-	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, moved}, baseline: b}); failed {
-		t.Fatalf("a baseline provider at a non-standard path must pass:\n%s", out)
+	moved := func(build string) *fileReport {
+		return &fileReport{Path: "/opt/openssl/lib/ossl-modules/fips.so", Markers: []string{"OpenSSL 3.4.0"}, HasSource: true,
+			ProviderNames: []string{b.ProviderName}, ProviderBuilds: []string{build}}
 	}
-	moved.ProviderBuilds = []string{"3.4.0-r4"}
-	if failed, _ := evalOut(t, evalInput{reports: []*fileReport{sys3, moved}, baseline: b}); !failed {
-		t.Fatal("and must still fail rule 3 when its build is not the baseline's")
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, moved("3.4.0-r5")}, baseline: b}); failed {
+		t.Fatalf("an allowed provider build at a non-standard path must pass:\n%s", out)
+	}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys3, moved("3.4.0-r4")}, baseline: b}); !failed ||
+		!strings.Contains(out, `build "3.4.0-r4"`) || !strings.Contains(out, "fips.so: carries a compiled-in crypto library") {
+		t.Fatalf("an unrecognised one must fail rule 3 AND rule 2:\n%s", out)
+	}
+	if r := embeddedReason(moved("3.4.0-r5")); r == "" {
+		t.Fatal("embeddedReason alone must not exempt a provider module outside providerDirs")
+	}
+}
+
+// Allowed-provider list: DU's newest bases carry fips.so (#5132) and fips-3.6.0.so (#5523).
+func TestAllowedProviderList(t *testing.T) {
+	b := testBaseline()
+	sys4 := &fileReport{Path: "/usr/lib/libcrypto.so.4", Soname: "libcrypto.so.4"}
+	ssl4 := &fileReport{Path: "/usr/lib/python3.14/lib-dynload/_ssl.so", NeededCores: []string{"libcrypto.so.4"}}
+	mod := func(name string, builds ...string) *fileReport {
+		return &fileReport{Path: "/usr/lib/ossl-modules/" + name, ProviderNames: []string{b.ProviderName}, ProviderBuilds: builds}
+	}
+	f34, f36 := mod("fips.so", "3.4.0-r5"), mod("fips-3.6.0.so", "3.6.0-r4")
+
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys4, ssl4, f34, f36}, baseline: b, strict: true}); failed ||
+		!strings.Contains(out, "fips-3.6.0.so is an allowed build") || !strings.Contains(out, "note  more than one FIPS provider build is present") {
+		t.Fatalf("both allowed providers present must pass, with a note:\n%s", out)
+	}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys4, ssl4, f36}, baseline: b}); failed {
+		t.Fatalf("the #5523 provider alone must pass:\n%s", out)
+	}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys4, ssl4, f34, mod("fips-3.6.0.so", "3.6.0-r3")}, baseline: b}); !failed || !strings.Contains(out, `build "3.6.0-r3"`) {
+		t.Fatalf("a provider build not on the list must fail:\n%s", out)
+	}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys4, ssl4, mod("fips.so", "3.4.0-r5", "3.6.0-r4")}, baseline: b}); !failed || !strings.Contains(out, "reports name") {
+		t.Fatalf("a module carrying two builds is ambiguous and must fail:\n%s", out)
+	}
+	unknown := &fileReport{Path: "/usr/lib/ossl-modules/other.so"}
+	if failed, out := evalOut(t, evalInput{reports: []*fileReport{sys4, ssl4, f34, f36, unknown}, baseline: b}); !failed || !strings.Contains(out, "other.so is a loadable OpenSSL module other than a FIPS provider") {
+		t.Fatalf("an unknown module in a provider dir must fail:\n%s", out)
 	}
 }
