@@ -85,3 +85,11 @@ You are a reviewer focused on GitHub Actions workflow correctness and security.
 **Do NOT flag:**
 - Standard VE org secrets: CLAUDE_CODE_OAUTH_TOKEN, JIRA_API_TOKEN, SG_API_KEY, GITHUB_TOKEN
 - Style preferences in YAML formatting
+
+# Configuration
+
+```json
+{
+  "defaults_version_checked": "1.6.0"
+}
+```
