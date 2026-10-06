@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strconv"
 	"strings"
@@ -67,6 +68,54 @@ var cryptoLibMarker = regexp.MustCompile(`OpenSSL [0-9]+\.[0-9]+\.[0-9]+|BoringS
 // its own source paths in assert/error strings. Together with cryptoLibMarker it identifies an
 // embedded copy in a binary whose symbols are gone.
 var cryptoSourceMarker = regexp.MustCompile(`crypto/(evp|rand|fipsmodule|sha|bn|ec)/[a-z0-9_]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
+
+// The two marker patterns run over every byte of every ELF file. Go's regexp cannot skip ahead on
+// an alternation whose branches start differently, so it steps its NFA through each byte (about
+// 11 MiB/s; 90+ s for a builder image's toolchains). Each branch on its own starts with a literal,
+// which regexp finds with bytes.Index, so scanBytes runs the branches separately. They are derived
+// from the patterns above, which stay the single definition.
+var (
+	cryptoLibMarkerParts    = literalLedParts(cryptoLibMarker)
+	cryptoSourceMarkerParts = literalLedParts(cryptoSourceMarker)
+)
+
+// literalLedParts splits re's top-level alternation into one regexp per branch. It panics (at
+// start-up, so the check cannot run) if re is not an alternation or a branch has no literal
+// prefix: that branch would bring back the per-byte cost, and a wrong split must not run at all.
+func literalLedParts(re *regexp.Regexp) []*regexp.Regexp {
+	tree, err := syntax.Parse(re.String(), syntax.Perl)
+	if err != nil {
+		panic(fmt.Sprintf("marker pattern %q: %v", re, err))
+	}
+	if tree.Op != syntax.OpAlternate {
+		panic(fmt.Sprintf("marker pattern %q is not a top-level alternation", re))
+	}
+	parts := make([]*regexp.Regexp, 0, len(tree.Sub))
+	for _, sub := range tree.Sub {
+		p := regexp.MustCompile(sub.String())
+		if prefix, _ := p.LiteralPrefix(); prefix == "" {
+			panic(fmt.Sprintf("marker pattern %q: branch %q has no literal prefix", re, p))
+		}
+		parts = append(parts, p)
+	}
+	return parts
+}
+
+// addLibMarkers records every cryptoLibMarker match in b. Run per branch, a match that overlaps
+// another branch's match is also recorded (the single alternation would skip it): more markers,
+// which can only make a file fail, never pass.
+func addLibMarkers(b []byte, markers map[string]bool) {
+	for _, p := range cryptoLibMarkerParts {
+		for _, m := range p.FindAll(b, -1) {
+			markers[string(m)] = true
+		}
+	}
+}
+
+// hasSourceMarker reports whether b matches cryptoSourceMarker (any of its branches).
+func hasSourceMarker(b []byte) bool {
+	return slices.ContainsFunc(cryptoSourceMarkerParts, func(p *regexp.Regexp) bool { return p.Match(b) })
+}
 
 // otherCryptoLibs are independent crypto implementations, recognised by soname because they do
 // not export the OpenSSL entry-point names.
@@ -792,10 +841,8 @@ func scanBytes(r io.Reader, chunk, overlap int) (byteFacts, error) {
 	for {
 		n, err := io.ReadFull(r, tmp)
 		buf = append(buf, tmp[:n]...)
-		for _, m := range cryptoLibMarker.FindAll(buf, -1) {
-			facts.markers[string(m)] = true
-		}
-		facts.source = facts.source || cryptoSourceMarker.Match(buf)
+		addLibMarkers(buf, facts.markers)
+		facts.source = facts.source || hasSourceMarker(buf)
 		facts.goMagic = facts.goMagic || bytes.Contains(buf, goBuildInfoMagic)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			return facts, nil
