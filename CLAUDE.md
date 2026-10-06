@@ -25,6 +25,7 @@ cd credbridge && go build -o ../build/credbridge .
 ### Operational Tooling
 - `vetools/` — Python package (click CLI, kubernetes client, PyRSMQ). Requires Python 3.x.
 - `credbridge/` — Go 1.22+ binary for AWS ECR credential bridging in containers
+- `fips-invariant-check/` — Go static binary run as the last step of every VE image build: one OpenSSL core per image, no embedded crypto, optional behavioural probe. Tags `fips-invariant-check/vX.Y.Z`. See its README.
 - `bin/` — kubectl plugins (`kubectl-ve-console`, `kubectl-ve-queue`, `kubectl-ve-queues`, `dockercredrot`)
 - `.github/workflows/credential-rotation-reminder.yml` — Daily credential expiry checks → GH issues + Jira + email
 - `.github/credential-rotations.yml` — Credential inventory with expiry dates and rotation steps

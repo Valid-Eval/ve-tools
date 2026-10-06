@@ -1,0 +1,118 @@
+# fips-invariant-check
+
+Enforces the VE fleet's FIPS crypto invariant on a container image, from inside the image. It's a static Go binary, so it also runs in distroless images with no shell.
+
+## The invariant
+
+1. **One OpenSSL core.** Everything that links OpenSSL links the same soname version (`libcrypto.so.N`).
+   - Two cores in one process cannot both initialise the single Chainguard FIPS provider (`fips.so`), and whichever loads second fails.
+   - On 2026-10-02 this broke every Python service: libpq-17 `17.11-r4` moved to OpenSSL 4 while CPython uses OpenSSL 3, and libpq failed with `could not generate nonce`.
+2. **No unvalidated crypto.** No binary carries its own crypto library. Those never touch the FIPS provider and do not fail; they silently run non-validated crypto. Seen in the fleet:
+   - a precompiled `pg` gem with OpenSSL statically linked;
+   - the `cryptography` wheel with its own OpenSSL;
+   - Chromium/chromedriver with BoringSSL, and Mozilla NSS;
+   - Heimdal `libhcrypto`, pulled in by libldap's SASL/GSSAPI plugins;
+   - the AWS CLI's `_awscrt` with AWS-LC;
+   - Go binaries using standard-library crypto with no FIPS mode.
+
+   Go is the one sanctioned second module (decision 2026-10-02, INF-377), on exactly two routes (see the Go row below). A build-time check cannot see a runtime `GODEBUG=fips140=off` override, which switches FIPS mode off in a native-module binary, so deployment configuration must not set one.
+3. **Nothing skipped.** A gate that passes what it never inspected is worse than no gate. Any path the scan cannot inspect fails the run:
+   - an unreadable directory or file, or an ELF it cannot parse;
+   - an unreadable dynamic table, or one whose header-supplied size is implausible (over 64 MiB);
+   - a symbol table that is present but unreadable (only a missing one counts as stripped);
+   - a packed executable: UPX, or a PyInstaller `--onefile` bundle (its libraries, often a wheel's own OpenSSL, are compressed inside and extracted only at run time);
+   - a Go binary whose build info or function table cannot be read. Go is recognised by its sections or build-info magic, not only by `debug/buildinfo`, which reports damaged build info as "not a Go executable".
+
+   Files are judged by their ELF magic, never skipped by name or extension. A read error on any file is a failure, not a skip. Inside the image (`-root /`) only `/proc`, `/sys` and `/dev` are skipped, as virtual filesystems; in an extracted rootfs (`-root DIR`) they are ordinary directories and are scanned. An `*.allow` entry that is not a regular file (a directory, a FIFO) is an error, and in strict mode it counts as an allowlist file present. `/run` is scanned: it is not a mount during `docker build`, and what an image puts there ships with it. A separate debug-info file (`objcopy --only-keep-debug`, `-dbgsym`/`.debug` packages) holds no runnable code, and its own symbols are not judged. That is decided from its program headers alone: no executable segment has file bytes beyond the ELF and program headers and the notes right after them (with the entry point outside those bytes), the stack is declared non-executable, and the dynamic table has no file bytes. Section headers never make a file "debug info". Its linked libraries still count for rule 1, and the run notes how many such files it skipped judging. A missing `-root`, or one with nothing to inspect (no ELF file and no uninspectable path), is an error (exit 2). Linked libraries are read from the program headers (`PT_DYNAMIC`, as the loader does) whenever there is no in-file dynamic section: section headers stripped, or `.dynamic` missing or mislabelled. Files of any size are scanned in bounded chunks.
+
+## What it protects against
+
+The check catches **accidental** non-FIPS crypto: an upstream package, gem, wheel or Go module that bundles its own crypto library, or links a second OpenSSL. These arrive unannounced through ordinary dependency updates. It reads ELF files the way the loader does and fails closed on anything it cannot inspect.
+
+It is **not** a defence against a deliberately forged binary. An ELF whose section headers or build-info bytes were edited to mislead a scanner can still run normally. The checks make the cheap forgeries fail (a mislabelled `.dynamic`, false section flags, an unrecognisable Go function table), and the review history on the PR that introduced this tool lists the ones that were closed. But someone who can place a crafted binary in an image build already controls that image, so this is out of scope. Supply-chain provenance (pinned digests, signed packages) is the control for that.
+
+**Known gaps** (in scope, not yet covered; images that hit them need the behavioural probe):
+- **Native libraries inside archives.** A `.jar` (or other zip) is not ELF, so a native library inside it is never inspected. Netty's `netty-tcnative-boringssl-static` bundles BoringSSL that the JVM loads at run time, and a tcnative jar that links `libcrypto.so.N` is invisible to rule 1. Tracked as its own follow-up: in-archive scanning (INF-392).
+- **Crypto that is not native code.** JVM providers (SunJCE in `lib/modules`), pure-Python/Ruby/JS crypto, and interpreter-internal hash modules (CPython's builtin `_md5`/`_sha2`) are not ELF crypto entry points, so the structural check does not judge them. The `ok` line means no **native** crypto outside a validated module.
+- **Rust's `ring` with symbols stripped** (`strip = "symbols"`): it carries no version text or source paths to find. aws-lc-rs is still found by its source paths.
+- **Stripped static copies of non-OpenSSL stacks.** Mbed TLS, wolfSSL, Nettle, libgcrypt, libsodium, Botan and libtomcrypt are found by soname when shared, and by the public entry points they define when statically linked with symbols. Statically linked **and** stripped, they leave nothing this check reads. Crypto++ is found by soname only (its C++ symbols are mangled). Other independent stacks outside these lists are not detected.
+- **Provider identity is by strings, not hash.** Rule 3 reads the name and build-info strings compiled into a provider module. A modified module, or one rebuilt from patched source, that still carries the allowed strings passes. Deliberate forgery is out of scope; pinning module hashes per allowed build would close the accidental case.
+- **Other packers.** Only UPX and PyInstaller `--onefile` are recognised. A Nuitka `--onefile` bootstrap, or any binary that carries a compressed payload it extracts at run time, reads as a small plain ELF, though the payload can hold `_ssl` and `libcrypto` copies.
+
+## How it decides
+
+| Finding | Evidence |
+|---|---|
+| A process can mix cores | Each ELF's `DT_NEEDED` `libcrypto.so.N` / `libssl.so.N`, including OpenSSL 1.x's dotted `libcrypto.so.1.1`. The image fails if more than one soname version (core) is linked. Cores that are present but unused are reported as notes. |
+| Embedded copy | The file **defines** `RAND_bytes`, `EVP_DigestInit_ex` or `OPENSSL_init_crypto`, or Heimdal's `hc_RAND_bytes` / `hc_EVP_DigestInit_ex` (any binding, `.symtab` or `.dynsym`). The system `libcrypto`/`libssl`, and OpenSSL provider modules and OpenSSL 3 engines in `ossl-modules/` and `engines-3/` under any system lib dir (including `lib64` and the multiarch dirs), are exempt from this row; rule 3 judges those modules instead. Exact names only: CPython's `_ssl` defines a local `_ssl_RAND_bytes` wrapper and must pass. The exception is Rust crates' version-prefixed copies: aws-lc-rs (the rustls default provider) builds AWS-LC as `aws_lc_<version>_RAND_bytes` and so on, and ring prefixes its primitives `ring_core_<version>_`. |
+| Embedded copy, stripped | A crypto-library version string **plus** that library's own source paths (`crypto/evp/…`, `third_party/boringssl/`), with no system OpenSSL linked, in any binary. That includes Go binaries: cgo can link a static C library (librdkafka's bundled OpenSSL, say), which the Go row, reading only Go function names, never sees. A version string alone is not evidence: git carries `OpenSSL 3.6.4` only as `--build-options` text. |
+| Vendored library | A `libcrypto.so.N`/`libssl.so.N` outside the system lib dirs (`/lib`, `/lib64`, `/usr/lib`, `/usr/lib64`, and the multiarch `x86_64-linux-gnu` / `aarch64-linux-gnu` dirs), or an auditwheel-renamed `libcrypto-<hash>.so.N`. |
+| Independent crypto stack | Recognised by soname: Mozilla NSS (`libnss3`, `libssl3`, `libfreebl3` and the rest), Heimdal `libhcrypto`, libgcrypt, Nettle/hogweed, GnuTLS, Mbed TLS, wolfSSL, libsodium, Botan, Crypto++, libtomcrypt. A statically linked copy is recognised by a public entry point it **defines** (`mbedtls_ctr_drbg_seed`, `wc_InitRng`, `wolfSSL_Init`, `nettle_sha256_init`, `gcry_md_open`, `sodium_init`, `randombytes_buf`, `botan_rng_init`, `register_prng` and similar). A file that only calls them does not count. |
+| Go | The binary has crypto compiled in, and `debug/buildinfo` shows **neither** accepted route below. "Has crypto" means any function from a `crypto/...` package (including Go 1.24+'s `crypto/internal/fips140/`) or from `golang.org/x/crypto`. This is read from the binary's function table (`.gopclntab`, which stripping does not remove), not by searching its bytes, so text that merely mentions `crypto/` does not count. The routes: **(A) Chainguard native Go Cryptographic Module (CMVP #5247), DU go-fips ≥ 1.27:** `GOFIPS140` is a certified snapshot (`v1.0.0-<hash>`) **and** `DefaultGODEBUG` has `fips140=on` or `=only` **and** `chainguard_cryptographic_module=geomys` **and** `chainguard_entropy_source=geomys`. Upstream Go with `GOFIPS140=v1.0.0` fails: its entropy comes from outside the module boundary. `GOFIPS140=latest`/`inprocess` fail too: they build the unvalidated in-tree module. **(B) System OpenSSL, DU go-fips ≤ 1.26:** `-tags requirefips` **and** `GOEXPERIMENT=systemcrypto` **and** `CGO_ENABLED=1` (crypto via the system FIPS provider). It reports `GOFIPS140=latest`, so it is not judged by that. **Also:** a binary on either route still fails if it links crypto code from outside the standard library, because that code runs outside both validated modules and FIPS mode does not govern it. That means any `golang.org/x/crypto` package function (chacha20poly1305, argon2, hkdf, ssh and the like), and the third-party crypto modules listed in `scan.go` (`thirdPartyGoCrypto`: filippo.io/edwards25519, cloudflare/circl, ProtonMail/go-crypto, blake3 modules). It is decided per function, because a package's status depends on its x/crypto version: sha3 forwards to the standard library from v0.44.0 and pbkdf2 from v0.51.0, while older versions carry their own Keccak/PBKDF2. Only the forwarding functions of sha3, pbkdf2, ed25519 and curve25519 (`xcryptoWrappers`), the crypto-free packages (cryptobyte, acme, ocsp) and package initialisation are exempt. An unknown x/crypto package fails closed. The standard library's own vendored copy (`vendor/golang.org/x/crypto/...`, behind `crypto/tls`) does not count. Other third-party Go modules that implement crypto and are not on the list are not detected. |
+
+Structural checks cannot prove behaviour, so an image can also register a **behavioural probe**. The probe is a language-specific script that loads the runtime's own crypto first, then each native library, and asserts that MD5 is refused while SHA-256 and RAND work.
+- **Registering it:** use `-- CMD ARGS` or `FIPS_INVARIANT_PROBE`.
+- **Where it runs:** only inside the image (`-root /`). An explicit `-- CMD` with any other `-root` is an error (exit 2). An inherited `FIPS_INVARIANT_PROBE` is only noted as not run.
+- **Time limit:** `FIPS_INVARIANT_PROBE_TIMEOUT`, default `10m`. A probe that fails to start, exits non-zero or times out fails the run. At the deadline the probe's whole process group is killed, so a child it started cannot keep the build waiting.
+
+## Fleet baseline
+
+`baseline.env` names the OpenSSL majors a VE image may link and the FIPS provider builds it may carry. It is compiled into the binary, so each checker tag carries a baseline:
+
+- **Rule 1 (fleet part):** each image has one OpenSSL core, and its major follows that image's DU base. The image's own major is the core it links or, if nothing links one, the one core present. That major must be in `FIPS_OPENSSL_MAJORS` (`3 4` while DU moves its bases to OpenSSL 4). A core of any **other** major in the same image fails even if nothing links it yet, because the next package or `dlopen` that links it makes a second core in the process. This also covers cores loaded only with `dlopen`, which leave no `DT_NEEDED` (golang-fips/openssl, used by route B, probes `libcrypto.so.N` at run time): with one major present, that is the core it can load. With nothing linked, two present majors fail too. Remove the other major's files; derive which major to remove from what the image's runtime links, never hardcode it.
+- **Rule 3:** an image that carries a system OpenSSL must carry at least one FIPS provider module (`fips.so` or `fips-<version>.so`, anywhere in the image, since `OPENSSL_MODULES` can point anywhere). **Every** provider module must report exactly the name `FIPS_PROVIDER_NAME` and exactly one build listed in `FIPS_PROVIDER_BUILDS` (`BUILDINFO:CMVP` pairs, today `3.4.0-r5` for #5132 and `3.6.0-r4` for DU's opt-in #5523 `fips-3.6.0.so`). The same build twice fails. This automates the comparison the Security Policy's Crypto Officer check makes (`OSSL_PROV_PARAM_NAME`, `OSSL_PROV_PARAM_BUILDINFO`), against the fleet baseline: it proves every image ships allowed provider builds, not that a build is its certificate's. **Which provider is active** depends on the runtime OpenSSL config and is not checked here (a note is printed when more than one build is present); the behavioural probe is where that belongs. An image with no OpenSSL at all (static Go, distroless) has nothing to check. Every other loadable OpenSSL module (`legacy.so`, an engine, an unknown provider) fails wherever it sits: in a system provider dir, under any directory named `ossl-modules` or `engines-3`, or anywhere if it defines `OSSL_provider_init` or `bind_engine`. `OPENSSL_MODULES` and `OPENSSL_ENGINES` can point anywhere, and rule 2 would not catch such a module: a real `legacy.so` defines no crypto entry points and links the system core. A provider module outside the provider directories is exempt from rule 2 only once rule 3 has matched it to an allowed build.
+
+**Satisfying rule 3 for `legacy.so` (and rule 1 for another major's core).** Delete the files in the **final** stage, after its last `apk` step, then assert they are gone, and run the check as the last step of every build, downstream images included:
+
+```dockerfile
+RUN rm -f /usr/lib/ossl-modules/legacy.so && test ! -e /usr/lib/ossl-modules/legacy.so
+```
+
+Don't use `apk del openssl-provider-legacy-allowed`: on DU bases it exits 0 and leaves `legacy.so` in place. And any later `apk fix`, or reinstall of the owning package, restores a deleted file (also exit 0). That is why the deletion goes after the last `apk` step, and why each downstream build reruns the check rather than trusting its base. The package stays listed in the apk database and SBOM after the file is gone.
+
+The provider values start at what the fleet ships (survey of deployed images, 2026-10-03). Changing the provider builds, or the set of majors, is one edit to `baseline.env` plus a new checker tag. Renovate tracks the checker version in each image repo, so it opens the bump everywhere at once, and the builds that fail are the migration checklist.
+
+`-baseline FILE` overrides the compiled-in baseline, for trying a change before tagging it. It is refused (exit 2) in strict mode, whether from `-strict` or an inherited `FIPS_INVARIANT_STRICT`, so it can never appear on a production `RUN` line.
+
+## Use
+
+```dockerfile
+# In the image's gobuilder stage (credbridge pattern):
+RUN CGO_ENABLED=0 GOBIN=/usr/bin go install github.com/Valid-Eval/ve-tools/fips-invariant-check@v0.1.0
+# ...and as the LAST step of every image build, base or downstream. Run it as root, then
+# restore the image's own user (65532 on the fleet's runtime bases; use your image's own, e.g.
+# neo4j:neo4j). This is the PRODUCTION form: "-strict" (or an inherited FIPS_INVARIANT_STRICT=1).
+# In a builder stage, drop "-strict": strict mode treats any allow file as a failure, and builder
+# images may carry one.
+USER 0
+RUN --mount=type=bind,from=gobuilder,source=/usr/bin/fips-invariant-check,target=/usr/local/bin/fips-invariant-check \
+    ["/usr/local/bin/fips-invariant-check", "-strict"]
+USER 65532
+```
+
+- **Run it as root.** A `RUN` executes as the image's current `USER`. As a non-root user the scan cannot open root-only paths, and because it fails closed, it then fails. On the fleet's Chainguard runtime bases (`USER 65532`) that is 9 paths: `/etc/shadow`, `/root`, `/usr/man`, `/var/adm`, `/var/lib/ftp`, `/var/lib/news`, `/var/mail`, `/var/spool/lpd` and `/var/spool/uucppublic`.
+- **Bind-mount it, don't `COPY` it.** The mount keeps the checker out of the published image. A `COPY` would leave `/usr/local/bin/fips-invariant-check` in every production image.
+- The exec form works in distroless images, which have no shell.
+
+To scan an extracted rootfs instead, run `fips-invariant-check -root /path/to/rootfs`. The behavioural probe is skipped in that mode.
+
+- **Exit status:** `0` means the invariant holds, `1` a violation, `2` a usage or internal error.
+- **`-v`** additionally lists every file that passes while linking a system OpenSSL, naming a crypto library, or being a Go binary.
+- **`FIPS_INVARIANT_STRICT`** accepts `1`/`true`/`yes`/`on` (strict) and `0`/`false`/`no`/`off` or unset (not strict). Anything else is an error, so a mistyped value can't silently select non-strict mode.
+- **credbridge** is a Go binary that uses standard-library crypto, so an image carrying it passes only once it's built on route (A) or (B) (INF-377, `ve-base/go-fips`). Until then, builder images exempt it by name; production (strict) images can't.
+
+## Exemptions
+
+Exemptions go in `/etc/fips-invariant-check/allow.d/*.allow` inside the image, or in a file passed with `-allow FILE`. When scanning an extracted rootfs, every component of the `allow.d` path is resolved inside the image, never on the host, including symlinked parent directories such as `/etc -> /usr/etc`. A dangling `allow.d` link, or a symlink loop, is an error.
+
+- **Format:** one `<absolute-glob> <reason>` per line, matched with `path.Match`. A trailing `/**` means "anything under the matching directory", and that directory part may itself use globs. A pattern whose first path component is a glob (for example `/**` or `/*/bin/**`) would exempt the whole image and is rejected.
+- **An entry exempts a file from both rules.** It also takes the file out of the OpenSSL-core count. The core rule is deliberately image-wide, stricter than the per-process hazard, so a build tool that runs as its own process and links another core (e.g. a Rust toolchain built against OpenSSL 4) can be exempted by name.
+- **Every entry needs a reason.** It's printed every time the entry is used, so an exemption is always visible in the build log.
+- **Stale entries are flagged:** an entry that matches nothing produces a warning. Overlapping entries that match the same file both count as used.
+- **Production images run in strict mode.** Runtime bases set `FIPS_INVARIANT_STRICT=1` (or pass `-strict`), and every image built FROM them inherits it. The environment is a floor: strict mode is on if either the flag or the variable is set, and `-strict=false` with the variable set is a usage error (exit 2). A downstream `ENV FIPS_INVARIANT_STRICT=0` cannot be told apart from a deliberate setting, so production Dockerfiles also pass `-strict` explicitly in the check's `RUN` line, where review can see it. In strict mode no exemption applies, and the presence of any allowlist file is itself a failure. An exemption copied out of a builder stage can therefore never open a hole in production.
+- **A builder stage on a non-FIPS base** can exempt its system `libcrypto`/`libssl` by path. An image whose only OpenSSL core is exempted (and that links no other) needs no FIPS provider. Production images can't do this, since strict mode ignores exemptions.
+- **Use them only for things that never ship to production**, such as a builder-only toolchain. Exemptions live in the image, so a downstream image that discards the builder stage also discards its exemptions.
+
+## Releases
+
+Tags are `fips-invariant-check/vX.Y.Z` (Go's subdirectory-module convention), so `go install …@vX.Y.Z` resolves them.
