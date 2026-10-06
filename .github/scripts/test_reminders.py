@@ -71,7 +71,8 @@ class Fixture:
         r = self.run('reminders_check.py', GITHUB_OUTPUT=out, **env)
         result = None
         if os.path.exists(out):
-            text = open(out).read()
+            with open(out) as f:
+                text = f.read()
             line = next(l for l in text.splitlines() if l.startswith('{'))
             result = json.loads(line)['due']
         return r, result
