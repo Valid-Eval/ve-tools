@@ -179,13 +179,22 @@ func TestLiteralLedParts(t *testing.T) {
 	if len(parts) != 2 || parts[0].String() != `ab[0-9]` || parts[1].String() != `cd` {
 		t.Errorf("split of ab[0-9]|cd: %v", parts)
 	}
-	// A nested alternation inside a literal-led branch is fine.
-	if parts := literalLedParts(regexp.MustCompile(`ab(c|d)|ef`)); len(parts) != 2 {
-		t.Errorf("split of ab(c|d)|ef: %v", parts)
+	// A nested alternation inside a literal-led branch is fine, and an outer group is unwrapped.
+	for _, p := range []string{`ab(c|d)|ef`, `(ab(c|d)|ef)`} {
+		if parts := literalLedParts(regexp.MustCompile(p)); len(parts) != 2 {
+			t.Errorf("split of %s: %v", p, parts)
+		}
 	}
-	// Not an alternation; a branch with no literal prefix; and branches sharing a prefix, which the
-	// parser factors into one concatenation (so a new branch like "OpenSSH" would refuse to start).
-	for _, bad := range []string{`OpenSSL [0-9]+`, `abc|[0-9]+x`, `abc|(?i)def`, `abc1|abc2`} {
+	// Not an alternation (one branch, or branches the parser factors into one concatenation because
+	// they share a prefix): returned whole, as long as it is literal-led.
+	for p, prefix := range map[string]string{`OpenSSL [0-9]+`: "OpenSSL ", `abc1|abc2`: "abc", `OpenSSL [0-9]|OpenSSH`: "OpenSS"} {
+		parts := literalLedParts(regexp.MustCompile(p))
+		if got, _ := parts[0].LiteralPrefix(); len(parts) != 1 || parts[0].String() != p || got != prefix {
+			t.Errorf("%s: want itself, literal prefix %q; got %v", p, prefix, parts)
+		}
+	}
+	// Any part without a literal prefix refuses to start.
+	for _, bad := range []string{`[0-9]+x`, `abc|[0-9]+x`, `abc|(?i)def`, `(?i)abc`} {
 		func() {
 			defer func() {
 				if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "marker pattern") {

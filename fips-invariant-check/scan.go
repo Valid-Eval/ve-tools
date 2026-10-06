@@ -79,16 +79,23 @@ var (
 	cryptoSourceMarkerParts = literalLedParts(cryptoSourceMarker)
 )
 
-// literalLedParts splits re's top-level alternation into one regexp per branch. It panics (at
-// start-up, so the check cannot run) if re is not an alternation or a branch has no literal
-// prefix: that branch would bring back the per-byte cost, and a wrong split must not run at all.
+// literalLedParts splits re's top-level alternation into one regexp per branch. A pattern that is
+// not an alternation (one branch, or branches the parser factored into one concatenation because
+// they share a prefix) is returned whole. It panics (at start-up, so the check cannot run) if any
+// part has no literal prefix: that part would bring back the per-byte cost.
 func literalLedParts(re *regexp.Regexp) []*regexp.Regexp {
 	tree, err := syntax.Parse(re.String(), syntax.Perl)
 	if err != nil { // unreachable: re was compiled from this string with these same flags
 		panic(fmt.Sprintf("marker pattern %q: %v", re, err))
 	}
+	for tree.Op == syntax.OpCapture { // only whole matches are used, so an outer group adds nothing
+		tree = tree.Sub[0]
+	}
 	if tree.Op != syntax.OpAlternate {
-		panic(fmt.Sprintf("marker pattern %q is not a top-level alternation", re))
+		if prefix, _ := re.LiteralPrefix(); prefix == "" {
+			panic(fmt.Sprintf("marker pattern %q has no literal prefix", re))
+		}
+		return []*regexp.Regexp{re}
 	}
 	parts := make([]*regexp.Regexp, 0, len(tree.Sub))
 	for _, sub := range tree.Sub {
