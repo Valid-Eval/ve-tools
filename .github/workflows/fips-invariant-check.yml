@@ -38,6 +38,12 @@ jobs:
       - run: go vet ./...
       - name: Vets for other hosts (scanning an extracted rootfs off Linux is supported)
         run: for os in windows darwin; do GOOS=$os go vet ./... || exit 1; done
+      # The C fixture (a real binary with OpenSSL linked in statically, then stripped) needs these.
+      # FIC_REQUIRE_C_FIXTURES makes a missing toolchain fail the run instead of skipping the case.
+      - name: C fixture toolchain
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends gcc libc6-dev libssl-dev pkg-config zlib1g-dev libzstd-dev
       - run: go test -count=1 ./...
+        env:
+          FIC_REQUIRE_C_FIXTURES: "1"
       - name: Builds as the static binary the images install
         run: CGO_ENABLED=0 go build -trimpath -o /tmp/fips-invariant-check . && file /tmp/fips-invariant-check | grep -q 'statically linked'

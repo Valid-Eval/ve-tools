@@ -67,12 +67,12 @@ func TestEmbeddedReason(t *testing.T) {
 
 func TestSourceMarker(t *testing.T) {
 	for _, s := range []string{"third_party/boringssl/src/crypto/x.c", "crypto/evp/digest.c", "ssl/ssl_lib.c"} {
-		if !cryptoSourceMarker.MatchString(s) {
+		if !hasSourceMarker([]byte(s)) {
 			t.Errorf("should match %q", s)
 		}
 	}
 	for _, s := range []string{"OpenSSL: %s", "libcurl: %s", "SHA256_BLK"} { // git's strings
-		if cryptoSourceMarker.MatchString(s) {
+		if hasSourceMarker([]byte(s)) {
 			t.Errorf("must not match %q", s)
 		}
 	}
