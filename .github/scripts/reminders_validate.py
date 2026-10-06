@@ -19,7 +19,7 @@ SOURCES = [
 ]
 # Shape checks for the compliance links rendered into notifications.
 FIELD_PATTERNS = {
-    'jira_ref': (r'[A-Z][A-Z0-9]+-\d+', 'a Jira key like INF-382'),
+    'jira_ref': (r'[A-Z][A-Z0-9]+-[0-9]+', 'a Jira key like INF-382'),
     'compliance_ref': (r'https://\S+', 'an https:// URL'),
 }
 
@@ -31,7 +31,7 @@ STRING_OPTIONAL_KEYS = ('jira_priority', 'notes')
 JIRA_PRIORITIES = ('Highest', 'High', 'Medium', 'Low', 'Lowest')
 EMAIL = r'[^@\s]+@[^@\s]+\.[^@\s]+'
 JIRA_PROJECT = r'[A-Z][A-Z0-9]+'
-ISO_DATE = r'\d{4}-\d{2}-\d{2}'  # fromisoformat() also accepts the compact 20261020 form on 3.11+
+ISO_DATE = r'[0-9]{4}-[0-9]{2}-[0-9]{2}'  # fromisoformat() also accepts the compact 20261020 form on 3.11+
 
 errors = []
 today = datetime.date.fromisoformat(os.environ['REMINDERS_TODAY']) if os.environ.get('REMINDERS_TODAY') else datetime.date.today()
@@ -118,7 +118,7 @@ for config_path, list_key, required_fields, date_field, may_be_empty in SOURCES:
 
         for field, (pattern, what) in FIELD_PATTERNS.items():
             value = entry.get(field)
-            if field in required_fields and isinstance(value, str) and not re.fullmatch(pattern, value):
+            if isinstance(value, str) and not re.fullmatch(pattern, value):
                 errors.append(f"{label}: '{field}' must be {what} (got '{value}')")
 
         # Validate name contains only safe characters, and is unique (it forms the dedup title)
