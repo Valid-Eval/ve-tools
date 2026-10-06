@@ -41,7 +41,10 @@ jobs:
       # The C fixture (a real binary with OpenSSL linked in statically, then stripped) needs these.
       # FIC_REQUIRE_C_FIXTURES makes a missing toolchain fail the run instead of skipping the case.
       - name: C fixture toolchain
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends gcc libc6-dev libssl-dev pkg-config zlib1g-dev libzstd-dev
+        # Retries ride out a transient mirror error; a real failure still fails the job.
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update -q
+          sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends gcc libc6-dev libssl-dev pkg-config zlib1g-dev libzstd-dev
       - run: go test -count=1 ./...
         env:
           FIC_REQUIRE_C_FIXTURES: "1"
