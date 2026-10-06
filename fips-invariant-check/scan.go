@@ -71,7 +71,7 @@ var cryptoSourceMarker = regexp.MustCompile(`crypto/(evp|rand|fipsmodule|sha|bn|
 
 // The two marker patterns run over every byte of every ELF file. Go's regexp cannot skip ahead on
 // an alternation whose branches start differently, so it steps its NFA through each byte (about
-// 11 MiB/s; 90+ s for a builder image's toolchains). Each branch on its own starts with a literal,
+// 11 MiB/s; 70-120 s for a builder image's toolchains). Each branch on its own starts with a literal,
 // which regexp finds with bytes.Index, so scanBytes runs the branches separately. They are derived
 // from the patterns above, which stay the single definition.
 var (
@@ -84,7 +84,7 @@ var (
 // prefix: that branch would bring back the per-byte cost, and a wrong split must not run at all.
 func literalLedParts(re *regexp.Regexp) []*regexp.Regexp {
 	tree, err := syntax.Parse(re.String(), syntax.Perl)
-	if err != nil {
+	if err != nil { // unreachable: re was compiled from this string with these same flags
 		panic(fmt.Sprintf("marker pattern %q: %v", re, err))
 	}
 	if tree.Op != syntax.OpAlternate {
@@ -102,8 +102,8 @@ func literalLedParts(re *regexp.Regexp) []*regexp.Regexp {
 }
 
 // addLibMarkers records every cryptoLibMarker match in b. Run per branch, a match that overlaps
-// another branch's match is also recorded (the single alternation would skip it): more markers,
-// which can only make a file fail, never pass.
+// another branch's match is also recorded (the single alternation would skip it). That only adds
+// report text: the set is non-empty exactly when the alternation's would be, so no verdict changes.
 func addLibMarkers(b []byte, markers map[string]bool) {
 	for _, p := range cryptoLibMarkerParts {
 		for _, m := range p.FindAll(b, -1) {

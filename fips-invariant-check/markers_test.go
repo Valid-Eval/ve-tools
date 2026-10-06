@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"maps"
 	"math/rand/v2"
@@ -46,8 +47,8 @@ func oracleScanBytes(r io.Reader, chunk, overlap int) (byteFacts, error) {
 
 // checkAgainstOracle fails unless scanBytes finds everything the oracle finds. It may find more:
 // run per branch, a match overlapping another branch's match is also recorded ("BoringSSLibreSSL 3"
-// gives LibreSSL 3 as well), which only makes a file fail. Each extra must still be a whole match
-// of the original pattern.
+// gives LibreSSL 3 as well). That is report text only, as the set is non-empty exactly when the
+// oracle's is. Each extra must still be a whole match of the original pattern.
 func checkAgainstOracle(t *testing.T, data []byte, chunk, overlap int) {
 	t.Helper()
 	got, err := scanBytes(bytes.NewReader(data), chunk, overlap)
@@ -103,9 +104,11 @@ func FuzzScanBytesMatchesOracle(f *testing.F) {
 	})
 }
 
-// Buffers of a few KiB run on regexp's backtracker; production's 16 MiB chunks run its NFA. This
-// puts the seeds in large buffers of mixed text and invalid UTF-8, at real overlap, so CI also
-// compares the engine production uses.
+// regexp runs small inputs on its backtracker (the limit is 256 Ki bits over the program's
+// instruction count: about 2-3.6 KiB for the v0.5.1 patterns, 5-32 KiB for single branches) and
+// larger ones on its NFA, which production's 16 MiB chunks use. The fuzz buffers are far smaller,
+// so this puts the seeds in buffers of more than 32 KiB, mixed text and invalid UTF-8, at real
+// overlap, so CI also compares the NFA.
 func TestScanBytesMatchesOracleLargeBuffers(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 	filler := make([]byte, 96<<10)
@@ -116,7 +119,7 @@ func TestScanBytesMatchesOracleLargeBuffers(t *testing.T) {
 	for _, s := range oracleSeeds {
 		for _, at := range []int{0, 4095, 32<<10 - 3, len(filler) - 1} {
 			data := slices.Concat(filler[:at], []byte(s), filler[at:])
-			for _, chunk := range []int{32 << 10, 64<<10 + 7, 112 << 10} {
+			for _, chunk := range []int{32<<10 + 1, 64<<10 + 7, 112 << 10} {
 				checkAgainstOracle(t, data, chunk, scanOverlap)
 			}
 		}
@@ -139,14 +142,21 @@ func TestMarkerBranches(t *testing.T) {
 			t.Errorf("%q: markers %v, want exactly %q", text, slices.Sorted(maps.Keys(got)), want)
 		}
 	}
-	for _, text := range []string{"x crypto/evp/digest.c x", "x ssl/t1_lib.cc x", "x third_party/boringssl/ x"} {
-		if !hasSourceMarker([]byte(text)) {
-			t.Errorf("%q must be a source marker", text)
+	source := map[string][]string{ // one entry per source branch, every inner arm
+		"crypto/":                {"crypto/evp/digest.c", "crypto/rand/rand_lib.c", "crypto/fipsmodule/bcm.cc", "crypto/sha/sha256.c", "crypto/bn/bn_lib.c", "crypto/ec/ec_key.cc"},
+		"ssl/":                   {"ssl/ssl_lib.c", "ssl/s3_lib.cc", "ssl/t1_lib.c", "ssl/ssl_cert.cc"},
+		"third_party/boringssl/": {"third_party/boringssl/"},
+	}
+	for _, texts := range source {
+		for _, text := range texts {
+			if !hasSourceMarker([]byte("x " + text + " x")) {
+				t.Errorf("%q must be a source marker", text)
+			}
 		}
 	}
-	if len(lib) != len(cryptoLibMarkerParts) || len(cryptoSourceMarkerParts) != 3 {
-		t.Errorf("branches: %d lib, %d source; this table covers %d lib, 3 source: add a row for the new branch",
-			len(cryptoLibMarkerParts), len(cryptoSourceMarkerParts), len(lib))
+	if len(lib) != len(cryptoLibMarkerParts) || len(source) != len(cryptoSourceMarkerParts) {
+		t.Errorf("branches: %d lib, %d source; this table covers %d lib, %d source: add a row for the new branch",
+			len(cryptoLibMarkerParts), len(cryptoSourceMarkerParts), len(lib), len(source))
 	}
 	for _, text := range []string{"OpenSSL: %s", "OpenSSL 3.", "LibreSSL x", "aws-lc/crypto/", "crypto/evp/.c", "ssl/ssl_libc", "SHA256_BLK"} {
 		got := map[string]bool{}
@@ -169,10 +179,16 @@ func TestLiteralLedParts(t *testing.T) {
 	if len(parts) != 2 || parts[0].String() != `ab[0-9]` || parts[1].String() != `cd` {
 		t.Errorf("split of ab[0-9]|cd: %v", parts)
 	}
-	for _, bad := range []string{`OpenSSL [0-9]+`, `abc|[0-9]+x`, `abc|(?i)def`} {
+	// A nested alternation inside a literal-led branch is fine.
+	if parts := literalLedParts(regexp.MustCompile(`ab(c|d)|ef`)); len(parts) != 2 {
+		t.Errorf("split of ab(c|d)|ef: %v", parts)
+	}
+	// Not an alternation; a branch with no literal prefix; and branches sharing a prefix, which the
+	// parser factors into one concatenation (so a new branch like "OpenSSH" would refuse to start).
+	for _, bad := range []string{`OpenSSL [0-9]+`, `abc|[0-9]+x`, `abc|(?i)def`, `abc1|abc2`} {
 		func() {
 			defer func() {
-				if r := recover(); r == nil || !strings.Contains(r.(string), "marker pattern") {
+				if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "marker pattern") {
 					t.Errorf("%q: want a marker-pattern panic, got %v", bad, r)
 				}
 			}()

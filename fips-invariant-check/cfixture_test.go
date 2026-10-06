@@ -15,9 +15,9 @@ import (
 // paths) can see it. The same program linked dynamically is the control and must pass.
 //
 // It needs a Linux C compiler, pkg-config and OpenSSL's static library with its own static
-// dependencies (Debian/Ubuntu: libssl-dev pkg-config zlib1g-dev libzstd-dev). Without
-// them the test skips, unless FIC_REQUIRE_C_FIXTURES=1 (set in CI), where a skip would hide that
-// this case never ran.
+// dependencies (Debian/Ubuntu: libssl-dev pkg-config zlib1g-dev libzstd-dev). Without them the test
+// skips, unless FIC_REQUIRE_C_FIXTURES is set (CI sets it; any value but "0"), where a skip would
+// hide that this case never ran. A missing strip or a failed dynamic link always fails.
 const opensslProgram = `#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <stdio.h>
@@ -33,8 +33,8 @@ int main(void) {
 func cFixtures(t *testing.T) (static, dynamic string) {
 	t.Helper()
 	unavailable := func(why string) {
-		if os.Getenv("FIC_REQUIRE_C_FIXTURES") == "1" {
-			t.Fatalf("FIC_REQUIRE_C_FIXTURES=1 but the C fixture cannot be built: %s", why)
+		if v := os.Getenv("FIC_REQUIRE_C_FIXTURES"); v != "" && v != "0" {
+			t.Fatalf("FIC_REQUIRE_C_FIXTURES=%s but the C fixture cannot be built: %s", v, why)
 		}
 		t.Skip(why)
 	}
