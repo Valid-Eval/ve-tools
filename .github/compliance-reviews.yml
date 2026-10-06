@@ -1,0 +1,88 @@
+# Compliance Review Schedule
+#
+# The credential-rotation-reminder workflow also checks this file daily and sends
+# notifications (GitHub issue, Jira ticket, email) when a review is within its
+# remind_days_before window. Kept separate from credential-rotations.yml so that
+# file stays credential-only.
+#
+# Tracking: each reminder cycle opens its own GitHub issue and its own Jira ticket in
+# jira_project (a reminder ticket, closed when the review is done). jira_ref is the
+# longer-lived work ticket the review belongs to (e.g. INF-382); it is linked from the
+# reminder, never reused or commented on, so that ticket and the reminder ticket both exist.
+#
+# After completing a review:
+#   1. Record the outcome in the record compliance_ref points to (e.g. the ve-compliance
+#      entry, or its PR until that merges)
+#   2. Set 'due' below to the next review date (this is how a review recurs), or
+#      remove the entry if no further review is needed. Once the record merges, repoint
+#      compliance_ref from its PR to the merged record
+#   3. Commit and push the change
+#   4. Close the corresponding GitHub issue and Jira ticket
+#
+# Required fields per review (strings): name, description, due, steps, compliance_ref, jira_ref
+#   due must be a quoted "YYYY-MM-DD"; jira_ref a Jira key (INF-382); compliance_ref an https:// URL;
+#   name must be unique (it forms the GitHub issue title used for dedup)
+# Optional fields (with defaults):
+#   remind_days_before: 15        — days before the due date to start reminding
+#   jira_priority: High           — Jira ticket priority
+#   notes: (none)                 — additional context shown in the GitHub issue and email
+# A missing file, an empty or comments-only file, or an empty list (reviews: []) is fine:
+# no reviews are scheduled and credential reminders are unaffected. email_to, email_from and
+# jira_project are required whenever any review is listed.
+
+email_to: tools@valideval.com
+email_from: tools@valideval.com
+jira_project: INF
+
+reviews:
+  - name: INF-382-pdf-exporter-renderer-gates
+    description: >-
+      Evaluate the gates for moving pdf-exporter's headless Chromium off TLS
+      (plain-HTTP in-cluster rendering behind the mesh), the follow-up to the
+      pdf-exporter embedded-crypto exception.
+    due: "2026-11-01"
+    remind_days_before: 30
+    steps: |-
+      1. Gate (a): observe the prod mesh images and confirm they are FIPS builds, and record the CMVP module backing ztunnel
+      2. Gate (b): give the renderer its own frontend/API base, not the absolute public https URL
+      3. Gate (c): capture a CDP request trace of a real report render and allowlist or abort off-cluster origins
+      4. Record the outcome on INF-382 and in the ve-compliance record
+    notes: |-
+      - Even with all three gates done, Chromium, chromedriver and NSS remain embedded crypto, so the exception stays unless image-browser changes
+      - The browser base image's Node has no fips.so
+    compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
+    jira_ref: INF-382
+
+  - name: pdf-exporter-embedded-crypto-exception-review
+    description: >-
+      Review the documented exception for crypto outside the FIPS provider in the
+      prod pdf-exporter image (Chromium BoringSSL, chromedriver, NSS, and Node
+      without fips.so).
+    due: "2026-12-31"
+    remind_days_before: 30
+    steps: |-
+      1. Re-check the exception scope against the current pdf-exporter and image-browser images
+      2. Review the status of the INF-382 gates and of image-browser
+      3. Decide: close the exception, extend it, or make it standing with periodic re-review
+      4. Record the decision in the ve-compliance record, then set 'due' here to the next review date (or remove this entry if closed)
+    compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
+    jira_ref: INF-382
+
+  - name: pdfminer-six-scoped-md5-exception-review
+    description: >-
+      Review the scoped FIPS exception (ve-compliance entry 2026-10-02-004) for the
+      pure-Python MD5 bound only to pdfminer.pdfdocument in proposal-analysis, used to
+      derive keys when reading legacy-encrypted (R2-R4) third-party PDFs.
+    due: "2026-12-31"
+    remind_days_before: 30
+    steps: |-
+      1. Check whether upstream pdfminer/pdfminer.six#1292 has removed the module-level `from hashlib import md5`
+      2. If it has and the fix is adopted, remove the module-local MD5 binding (VEP-2173) and record the exception as closed
+      3. Otherwise decide whether to renew the exception for a further fixed period
+      4. Record the outcome as a subsequent ve-compliance entry (if none exists by the due date, the exception has lapsed), then set 'due' here to the next review date or remove this entry
+    notes: |-
+      - Upstream: https://github.com/pdfminer/pdfminer.six/issues/1292
+      - The fleet fips-invariant-check cannot observe a pure-Python MD5, so it neither flags nor confirms this exception; this reminder tracks the review date
+      - The scope control is to be enforced by the both-ways tests in VEP-2173's scope
+    compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
+    jira_ref: VEP-2173
