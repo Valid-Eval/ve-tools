@@ -1,5 +1,7 @@
 import os, re, sys, datetime, yaml
 
+from reminders_yaml import load
+
 # REMINDERS_ROOT / REMINDERS_TODAY exist so the tests can run this against fixtures; the
 # workflow sets neither.
 ROOT = os.environ.get('REMINDERS_ROOT', '.')
@@ -42,8 +44,8 @@ for config_path, list_key, required_fields, date_field, may_be_empty in SOURCES:
 
     # --- Parse YAML ---
     try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
+        with open(config_path, encoding='utf-8') as f:
+            config = load(f)
     except (OSError, yaml.YAMLError) as e:
         print(f"FATAL: cannot read {config_path} as YAML:\n{e}")
         sys.exit(1)
@@ -70,19 +72,21 @@ for config_path, list_key, required_fields, date_field, may_be_empty in SOURCES:
         errors.append(f"{config_path}: '{list_key}' must be a {'list' if may_be_empty else 'non-empty list'}, got {type(entries).__name__}{hint}")
         continue
 
-    # --- Top-level routing fields (only needed when there is something to send) ---
-    if entries or not may_be_empty:
-        for field in ('email_to', 'email_from', 'jira_project'):
-            value = config.get(field)
-            if not value:
+    # --- Top-level routing fields: required only when there is something to send, but their shape
+    # is checked whenever they are present, so a bad value is caught before the next entry is added.
+    needed = bool(entries) or not may_be_empty
+    for field in ('email_to', 'email_from', 'jira_project'):
+        value = config.get(field)
+        if not value:
+            if needed:
                 errors.append(f"{config_path}: missing top-level field: '{field}'")
-            elif not isinstance(value, str):
-                errors.append(f"{config_path}: '{field}' must be a string, got {type(value).__name__}")
-            else:
-                pattern, what = (JIRA_PROJECT, 'an uppercase Jira project key like INF') if field == 'jira_project' \
-                    else (EMAIL, 'an email address')
-                if not re.fullmatch(pattern, value):
-                    errors.append(f"{config_path}: '{field}' must be {what} (got '{value}')")
+        elif not isinstance(value, str):
+            errors.append(f"{config_path}: '{field}' must be a string, got {type(value).__name__}")
+        else:
+            pattern, what = (JIRA_PROJECT, 'an uppercase Jira project key like INF') if field == 'jira_project' \
+                else (EMAIL, 'an email address')
+            if not re.fullmatch(pattern, value):
+                errors.append(f"{config_path}: '{field}' must be {what} (got '{value}')")
 
     # --- Per-entry validation ---
     seen_names = set()

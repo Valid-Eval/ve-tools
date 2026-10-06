@@ -1,4 +1,6 @@
-import json, datetime, os, uuid, yaml
+import json, datetime, os, uuid
+
+from reminders_yaml import load
 
 # REMINDERS_ROOT / REMINDERS_TODAY exist so the tests can run this against fixtures; the
 # workflow sets neither.
@@ -23,8 +25,8 @@ for config_path, list_key, kind, date_field, steps_field in SOURCES:
     if kind == 'compliance_review' and not os.path.exists(config_path):
         configs[kind] = {}  # validate allows an absent compliance file
         continue
-    with open(config_path) as f:
-        configs[kind] = yaml.safe_load(f) or {}
+    with open(config_path, encoding='utf-8') as f:
+        configs[kind] = load(f) or {}
 
 
 def routing(kind):
@@ -66,7 +68,7 @@ else:
                 due.append(item)
 
 delimiter = f"ghadelimiter_{uuid.uuid4()}"
-with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
     f.write(f"result<<{delimiter}\n")
     f.write(json.dumps({'due': due}))
     f.write(f"\n{delimiter}\n")
@@ -75,8 +77,10 @@ with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
 if due and not test_name:
     print(f"{len(due)} reminder(s) due:")
     for c in due:
+        # Same boundaries as the notify step: a credential expiring today is EXPIRED, a review due today is not OVERDUE.
+        is_past = c['days_left'] <= 0 if c['kind'] == 'credential' else c['days_left'] < 0
         past = 'EXPIRED' if c['kind'] == 'credential' else 'OVERDUE'
-        status = f"{past} ({abs(c['days_left'])} days ago)" if c['days_left'] < 0 else f"{c['days_left']} days left"
+        status = f"{past} ({abs(c['days_left'])} days ago)" if is_past else f"{c['days_left']} days left"
         print(f"  - [{c['kind']}] {c['name']}: {status}")
 elif not due:
     print("No credentials or compliance reviews due")
