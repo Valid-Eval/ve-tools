@@ -65,7 +65,7 @@ reviews:
 
   - name: pdfminer-six-scoped-md5-exception-review
     description: >-
-      Review the scoped FIPS exception (ve-compliance entry 2026-10-02-003) for the
+      Review the scoped FIPS exception (ve-compliance entry 2026-10-02-004) for the
       pure-Python MD5 bound only to pdfminer.pdfdocument in proposal-analysis, used to
       derive keys when reading legacy-encrypted (R2-R4) third-party PDFs.
     due: "2026-12-31"
