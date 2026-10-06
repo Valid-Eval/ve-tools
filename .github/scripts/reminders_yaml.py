@@ -36,7 +36,7 @@ class UniqueKeyLoader(yaml.SafeLoader):
                     and not re.fullmatch(r'[1-9][0-9]*', value_node.value)):
                 # YAML 1.1 reads 030 as octal 24, 1:30 as base-60 90, 0x20 and 1_000 as other numbers.
                 raise yaml.constructor.ConstructorError(
-                    None, None, f"remind_days_before must be written as plain decimal digits (got {value_node.value!r})",
+                    None, None, f"remind_days_before must be a positive integer written as plain decimal digits (got {value_node.value!r})",
                     value_node.start_mark)
         return super().construct_mapping(node, deep)
 

@@ -178,6 +178,20 @@ class ValidateTests(unittest.TestCase):
         self.assertRejects(Fixture(reviews=REVIEWS.replace('INF-1', 'INF-\uff11')), "'jira_ref' must be a Jira key")
         self.assertRejects(Fixture(reviews=REVIEWS.replace('"2026-10-20"', '"2026-10-\uff12\uff10"')), "not a valid ISO date")
 
+    def test_non_utf8_file_and_mixed_type_unknown_keys_fail_cleanly(self):
+        f = Fixture()
+        with open(os.path.join(f.dir.name, '.github', 'compliance-reviews.yml'), 'wb') as fh:
+            fh.write(b'reviews: []\n# caf\xe9\n')
+        r = f.validate()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('FATAL: cannot read', r.stdout)
+        self.assertRejects(Fixture(creds=CREDS + "1: x\nfoo: y\n"), "unknown top-level key")
+        self.assertRejects(Fixture(reviews=REVIEWS + "    7: x\n    foo: y\n"), "unknown key")
+
+    def test_falsy_wrong_typed_routing_fields_are_checked_even_with_no_entries(self):
+        self.assertRejects(Fixture(reviews='email_to: 0\nemail_from: []\njira_project: false\nreviews: []\n'),
+                           "'email_to' must be a string")
+
     def test_duplicate_name_is_rejected(self):
         dup = REVIEWS + REVIEWS.split('reviews:\n', 1)[1]
         self.assertRejects(Fixture(reviews=dup), "duplicate name")

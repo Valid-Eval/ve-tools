@@ -46,7 +46,7 @@ for config_path, list_key, required_fields, date_field, may_be_empty in SOURCES:
     try:
         with open(config_path, encoding='utf-8') as f:
             config = load(f)
-    except (OSError, yaml.YAMLError) as e:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
         print(f"FATAL: cannot read {config_path} as YAML:\n{e}")
         sys.exit(1)
 
@@ -59,7 +59,7 @@ for config_path, list_key, required_fields, date_field, may_be_empty in SOURCES:
         print(f"FATAL: {config_path} must contain a YAML mapping, got {type(config).__name__}")
         sys.exit(1)
 
-    unknown = sorted(set(config) - set(TOP_LEVEL_KEYS) - {list_key})
+    unknown = sorted(set(config) - set(TOP_LEVEL_KEYS) - {list_key}, key=repr)
     if unknown:
         errors.append(f"{config_path}: unknown top-level key(s) {unknown} (expected {list(TOP_LEVEL_KEYS) + [list_key]})")
 
@@ -77,7 +77,7 @@ for config_path, list_key, required_fields, date_field, may_be_empty in SOURCES:
     needed = bool(entries) or not may_be_empty
     for field in ('email_to', 'email_from', 'jira_project'):
         value = config.get(field)
-        if not value:
+        if field not in config or value is None or value == '':
             if needed:
                 errors.append(f"{config_path}: missing top-level field: '{field}'")
         elif not isinstance(value, str):
@@ -97,7 +97,7 @@ for config_path, list_key, required_fields, date_field, may_be_empty in SOURCES:
         label = entry.get('name', f'{list_key}[{i}]')
 
         known = set(required_fields) | set(OPTIONAL_ENTRY_KEYS)
-        unknown_keys = sorted(set(entry) - known)
+        unknown_keys = sorted(set(entry) - known, key=repr)
         if unknown_keys:
             errors.append(f"{label}: unknown key(s) {unknown_keys} (known: {sorted(known)})")
 
