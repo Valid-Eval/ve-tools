@@ -5,6 +5,11 @@
 # remind_days_before window. Kept separate from credential-rotations.yml so that
 # file stays credential-only.
 #
+# Tracking: each reminder cycle opens its own GitHub issue and its own Jira ticket in
+# jira_project (a reminder ticket, closed when the review is done). jira_ref is the
+# longer-lived work ticket the review belongs to (e.g. INF-382); it is linked from the
+# reminder, never reused or commented on, so that ticket and the reminder ticket both exist.
+#
 # After completing a review:
 #   1. Record the outcome in the record compliance_ref points to (e.g. the ve-compliance
 #      entry, or its PR until that merges)
