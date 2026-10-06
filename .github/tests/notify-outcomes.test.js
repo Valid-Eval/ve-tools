@@ -23,6 +23,12 @@ const ITEMS = {
   review: { kind: 'compliance_review', name: 'REVIEW_A', description: 'Review desc', date: '2026-10-20', days_left: 18,
     notes: 'review note', steps: '1. Look\n2. Record', compliance_ref: 'https://example.test/record',
     jira_ref: 'INF-382', ...ROUTING, jira_project: 'INF' },
+  reviewToday: { kind: 'compliance_review', name: 'REVIEW_T', description: 'd', date: '2026-10-02', days_left: 0,
+    steps: '1. x', compliance_ref: 'https://example.test/record', jira_ref: 'INF-382', ...ROUTING, jira_project: 'INF' },
+  reviewOver: { kind: 'compliance_review', name: 'REVIEW_O', description: 'd', date: '2026-10-01', days_left: -1,
+    steps: '1. x', compliance_ref: 'https://example.test/record', jira_ref: 'INF-382', ...ROUTING, jira_project: 'INF' },
+  credToday: { kind: 'credential', name: 'CRED_T', description: 'd', date: '2026-10-02', days_left: 0,
+    steps: '1. x', ...ROUTING, jira_project: 'VEP' },
   test: { kind: 'credential', name: 'TEST_CREDENTIAL', description: 'Test', date: '2026-10-02', days_left: 0,
     is_test: true, steps: '1. none', ...ROUTING, jira_project: 'VEP' },
   noEmail: { kind: 'credential', name: 'CRED_NOMAIL', description: 'd', date: '2026-10-10', days_left: 8,
@@ -130,6 +136,7 @@ async function run(workflowPath, opts) {
     labelCreates: count(c => c.createLabel) };
 }
 
+const issueOf = r => r.calls.find(x => x.issueCreate).issueCreate;
 const green = r => assert.deepStrictEqual(r.failed, []);
 // red(r, ...parts) or red(r, {lines: n}, ...parts): one setFailed containing every part,
 // and optionally exactly n recorded failures (summary lines after the header).
@@ -252,6 +259,23 @@ async function main() {
     }],
     ['an unexpected error inside an item is recorded as x item and the run continues', { items: ['credential', 'review'], searchBroken: true }, r => {
       red(r, { lines: 2 }, 'CRED_A x item', 'REVIEW_A x item');
+    }],
+    // Wording and structure the sender produces per kind (pins the OVERDUE boundary, titles and References).
+    ['compliance review due today is not OVERDUE', { items: ['reviewToday'] }, r => {
+      green(r); const i = issueOf(r); assert.strictEqual(i.title, 'Compliance review due: REVIEW_T');
+      assert(i.body.includes('**0 days** until due'), i.body); assert(!i.body.includes('OVERDUE'), i.body);
+    }],
+    ['compliance review one day past due is OVERDUE', { items: ['reviewOver'] }, r => {
+      green(r); assert(issueOf(r).body.includes('**OVERDUE** (1 days ago)'), issueOf(r).body);
+    }],
+    ['credential expiring today is EXPIRED (its boundary differs from a review)', { items: ['credToday'] }, r => {
+      green(r); assert(issueOf(r).body.includes('**EXPIRED** (0 days ago)'), issueOf(r).body);
+    }],
+    ['compliance review issue carries a References block; a credential issue does not', { items: all }, r => {
+      green(r); const [c, v] = [r.calls.filter(x => x.issueCreate)[0].issueCreate, r.calls.filter(x => x.issueCreate)[1].issueCreate];
+      assert.strictEqual(c.title, TITLES.CRED_A); assert(!c.body.includes('### References'), c.body);
+      assert.strictEqual(v.title, TITLES.REVIEW_A);
+      for (const line of ['### References', '- Compliance record: https://example.test/record', '- Jira: https://valideval.atlassian.net/browse/INF-382']) assert(v.body.includes(line), v.body);
     }],
     // Non-fatal setup path: not a recorded failure.
     ['label bootstrap failure does not stop delivery', { items: ['credential'], labelBootstrap: 'fail' }, r => {
