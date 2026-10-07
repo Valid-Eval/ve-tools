@@ -64,7 +64,7 @@ function extractScript(path) {
 // opts: items, env, jira/sendgrid ({status, body, badJson} or {throws}), issueFails,
 //       existing ({title: [labels]}, matched by exact phrase), searchItems ([{title, labels}],
 //       returned for every query, like a phrase match), searchThrows, searchBroken (no data),
-//       labelBootstrap ('fail' | 'missing' | 'race'), removeLabelFails (HTTP status), createDropsLabels, createLabelsShape ('strings' | 'absent'), itemOverrides ({item: fields})
+//       labelBootstrap ('fail' | 'missing' | 'race'), removeLabelFails (HTTP status), createDropsLabels, createLabelsShape ('strings' | 'absent'), existingLabels ([names that getLabel finds; others 404]), itemOverrides ({item: fields})
 async function run(workflowPath, opts) {
   const calls = [], logs = [], failed = [];
   const env = { JIRA_USER_EMAIL: 'dummy@example.test', JIRA_API_TOKEN: 'dummy-jira-token',
@@ -89,9 +89,11 @@ async function run(workflowPath, opts) {
   const httpErr = (status, msg) => Object.assign(new Error(msg), { status });
   const github = { rest: {
     issues: {
-      getLabel: async () => {
+      getLabel: async p => {
+        calls.push({ getLabel: p });
         if (opts.labelBootstrap === 'fail') throw httpErr(500, 'getLabel 500');
         if (opts.labelBootstrap === 'missing' || opts.labelBootstrap === 'race') throw httpErr(404, 'Not Found');
+        if (opts.existingLabels && !opts.existingLabels.includes(p.name)) throw httpErr(404, 'Not Found');
         return {};
       },
       createLabel: async p => {
@@ -168,7 +170,9 @@ async function main() {
       assert.deepStrictEqual(r.createdLabels, [['maintenance', 'pending:jira', 'pending:email'], ['maintenance', 'pending:jira', 'pending:email']]);
       assert.deepStrictEqual(r.added, []); assert.deepStrictEqual(r.removed, ['pending:jira', 'pending:email', 'pending:jira', 'pending:email']);
     }],
-    ['zero in-window items is green, no calls', { items: [] }, r => { green(r); assert.strictEqual(r.calls.length, 0); }],
+    ['zero in-window items is green and sends nothing (only the label bootstrap may run)', { items: [] }, r => {
+      green(r); assert.deepStrictEqual(r.calls.filter(c => !c.getLabel && !c.createLabel), []);
+    }],
     ['Jira HTTP 500 fails, names item x channel, email still sent', { items: all, jira: { status: 500 } }, r => {
       red(r, 'credential CRED_A x jira', 'compliance_review REVIEW_A x jira'); assert(!r.failed[0].includes('x email'));
       assert.strictEqual(r.email, 2);
@@ -359,13 +363,29 @@ async function main() {
     ['a label that already exists when createLabel runs (422 race) is silent and delivery proceeds', { items: ['credential'], labelBootstrap: 'race' }, r => {
       green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]); assert(!r.logs.some(l => l.startsWith('ERR createLabel')), r.logs.join('\n'));
     }],
+    ['only the missing labels are created: maintenance exists, the pending labels do not', { items: ['credential'], existingLabels: ['maintenance'] }, r => {
+      green(r);
+      assert.deepStrictEqual(r.calls.filter(c => c.getLabel).map(c => c.getLabel.name), ['maintenance', 'pending:jira', 'pending:email']);
+      assert.deepStrictEqual(r.calls.filter(c => c.createLabel).map(c => c.createLabel.name), ['pending:jira', 'pending:email']);
+    }],
     // Non-fatal setup path: not a recorded failure.
-    ['label bootstrap failure does not stop delivery', { items: ['credential'], labelBootstrap: 'fail' }, r => {
+    ['label bootstrap failure does not stop delivery, still tries to create each label, and logs both errors', { items: ['credential'], labelBootstrap: 'fail' }, r => {
+      assert.strictEqual(r.labelCreates, 3);
+      for (const n of ['maintenance', 'pending:jira', 'pending:email']) {
+        assert(r.logs.includes(`ERR getLabel(${n}) failed: getLabel 500`), r.logs.join('\n'));
+        assert(r.logs.includes(`ERR createLabel(${n}) failed: createLabel 403`), r.logs.join('\n'));
+      }
       green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]);
     }],
     ['missing labels (maintenance and both pending) are created, then delivery proceeds', { items: ['credential'], labelBootstrap: 'missing' }, r => {
       green(r); assert.strictEqual(r.labelCreates, 3);
-      assert.deepStrictEqual(r.calls.filter(c => c.createLabel).map(c => c.createLabel.name), ['maintenance', 'pending:jira', 'pending:email']); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]);
+      const LABEL_FIELDS = { owner: 'o', repo: 'r' };
+      assert.deepStrictEqual(r.calls.filter(c => c.createLabel).map(c => c.createLabel), [
+        { ...LABEL_FIELDS, name: 'maintenance', color: '0e8a16', description: 'Maintenance and operational tasks' },
+        { ...LABEL_FIELDS, name: 'pending:jira', color: 'fbca04', description: 'Reminder: Jira ticket not yet delivered; the daily run retries it' },
+        { ...LABEL_FIELDS, name: 'pending:email', color: 'fbca04', description: 'Reminder: email not yet delivered; the daily run retries it' },
+      ]);
+      assert(!r.logs.some(l => l.startsWith('ERR getLabel')), 'a 404 is the expected answer and is not logged'); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]);
     }],
   ];
   for (const v of ['TRUE', 'True', 'true']) {
