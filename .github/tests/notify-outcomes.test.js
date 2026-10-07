@@ -64,7 +64,7 @@ function extractScript(path) {
 // opts: items, env, jira/sendgrid ({status, body, badJson} or {throws}), issueFails,
 //       existing ({title: [labels]}, matched by exact phrase), searchItems ([{title, labels}],
 //       returned for every query, like a phrase match), searchThrows, searchBroken (no data),
-//       labelBootstrap ('fail' | 'missing' | 'race'), removeLabelFails (HTTP status), createDropsLabels, createLabelsShape ('strings' | 'absent'), existingLabels ([names that getLabel finds; others 404]), itemOverrides ({item: fields})
+//       labelBootstrap ('fail' | 'missing' | 'race'), removeLabelFails (HTTP status, every removal), removeLabelFailsFor (one label name, HTTP 500), createDropsLabels, createLabelsShape ('strings' | 'absent'), liveLabels ([labels issues.get returns; default = what search showed]), getIssueFails (HTTP status), existingLabels ([names that getLabel finds; others 404]), itemOverrides ({item: fields})
 async function run(workflowPath, opts) {
   const calls = [], logs = [], failed = [];
   const env = { JIRA_USER_EMAIL: 'dummy@example.test', JIRA_API_TOKEN: 'dummy-jira-token',
@@ -86,9 +86,16 @@ async function run(workflowPath, opts) {
   console.error = (...a) => logs.push('ERR ' + a.join(' '));
   const existing = opts.existing || {};
   let n = 100;
+  let lastSearchLabels = [];
   const httpErr = (status, msg) => Object.assign(new Error(msg), { status });
   const github = { rest: {
     issues: {
+      get: async p => {
+        calls.push({ issueGet: p });
+        if (opts.getIssueFails) throw httpErr(opts.getIssueFails, `issues.get ${opts.getIssueFails}`);
+        const names = opts.liveLabels || lastSearchLabels;  // the issue itself; default: what search showed
+        return { data: { number: p.issue_number, labels: names.map(name => ({ name })) } };
+      },
       getLabel: async p => {
         calls.push({ getLabel: p });
         if (opts.labelBootstrap === 'fail') throw httpErr(500, 'getLabel 500');
@@ -106,6 +113,7 @@ async function run(workflowPath, opts) {
       removeLabel: async p => {
         calls.push({ removeLabel: p });
         if (opts.removeLabelFails) throw httpErr(opts.removeLabelFails, `removeLabel ${opts.removeLabelFails}`);
+        if (opts.removeLabelFailsFor === p.name) throw httpErr(500, `removeLabel ${p.name} 500`);
         return {};
       },
     },
@@ -114,8 +122,9 @@ async function run(workflowPath, opts) {
       if (opts.searchThrows) throw httpErr(403, 'secondary rate limit');
       if (opts.searchBroken) return { data: null };
       const toItem = ([title, labels]) => ({ number: 7, title, labels: ['maintenance', ...labels].map(name => ({ name })) });
-      if (opts.searchItems) return { data: { items: opts.searchItems.map(i => (i.noLabelsField ? { number: 7, title: i.title } : toItem([i.title, i.labels]))) } };
+      if (opts.searchItems) { lastSearchLabels = (opts.searchItems[0] || {}).labels || []; return { data: { items: opts.searchItems.map(i => (i.noLabelsField ? { number: 7, title: i.title } : toItem([i.title, i.labels]))) } }; }
       const items = Object.entries(existing).filter(([t]) => p.q.includes(`"${t}"`)).map(toItem);
+      lastSearchLabels = items[0] ? items[0].labels.map(l => l.name).filter(l => l !== 'maintenance') : [];
       return { data: { items } };
     } },
   } };
@@ -367,6 +376,24 @@ async function main() {
       green(r);
       assert.deepStrictEqual(r.calls.filter(c => c.getLabel).map(c => c.getLabel.name), ['maintenance', 'pending:jira', 'pending:email']);
       assert.deepStrictEqual(r.calls.filter(c => c.createLabel).map(c => c.createLabel.name), ['pending:jira', 'pending:email']);
+    }],
+    ['stale search index: search shows no pending labels but the issue still has pending:jira -> retried', { items: ['credential'], existing: { [TITLES.CRED_A]: [] }, liveLabels: ['pending:jira'] }, r => {
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 1, 0]); assert.deepStrictEqual(r.removed, ['pending:jira']);
+    }],
+    ['stale search index: search still shows a pending label the issue no longer has -> skipped, no resend', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira', 'pending:email'] }, liveLabels: [] }, r => {
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 0, 0]); assert.deepStrictEqual(r.removed, []);
+    }],
+    ['a failed issues.get skips the item and fails the run (cannot tell delivered from owed)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, getIssueFails: 500 }, r => {
+      red(r, 'CRED_A x dedup-labels', 'could not read labels of open issue #7'); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 0, 0]);
+    }],
+    ['issues.get is called on the matched issue number, only when a duplicate is found', { items: ['credential'], existing: { [TITLES.CRED_A]: [] } }, r => {
+      green(r); assert.deepStrictEqual(r.calls.filter(c => c.issueGet).map(c => c.issueGet.issue_number), [7]);
+    }],
+    ['no duplicate -> issues.get is not called', { items: ['credential'] }, r => {
+      green(r); assert.strictEqual(r.calls.filter(c => c.issueGet).length, 0);
+    }],
+    ['a removal failure on one label does not stop the next label being removed', { items: ['credential'], removeLabelFailsFor: 'pending:jira' }, r => {
+      red(r, 'could not remove pending:jira'); assert.deepStrictEqual(r.removed, ['pending:jira', 'pending:email']);
     }],
     // Non-fatal setup path: not a recorded failure.
     ['label bootstrap failure does not stop delivery, still tries to create each label, and logs both errors', { items: ['credential'], labelBootstrap: 'fail' }, r => {
