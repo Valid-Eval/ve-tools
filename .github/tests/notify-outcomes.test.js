@@ -64,7 +64,7 @@ function extractScript(path) {
 // opts: items, env, jira/sendgrid ({status, body, badJson} or {throws}), issueFails,
 //       existing ({title: [labels]}, matched by exact phrase), searchItems ([{title, labels}],
 //       returned for every query, like a phrase match), searchThrows, searchBroken (no data),
-//       labelBootstrap ('fail' | 'missing' | 'race'), removeLabelFails (HTTP status, every removal), removeLabelFailsFor (one label name, HTTP 500), matchedNumber (issue number the search returns; default 7), createDropsLabels, createLabelsShape ('strings' | 'absent'), liveLabels ([labels issues.get returns; default = what search showed]), getIssueFails (HTTP status), liveState ('closed'), liveShape ('strings' | 'absent'), existingLabels ([names that getLabel finds; others 404]), itemOverrides ({item: fields})
+//       labelBootstrap ('fail' | 'missing' | 'race'), removeLabelFails (HTTP status, every removal), removeLabelFailsFor (one label name, HTTP 500), matchedNumber (issue number the search returns; default 7), createDropsLabels, createLabelsShape ('strings' | 'absent'), liveLabels ([labels issues.get returns; default = what search showed]), getIssueFails (HTTP status, or 'nostatus' for an error without one), liveState ('closed' | 'absent'), liveShape ('strings' | 'absent'), existingLabels ([names that getLabel finds; others 404]), itemOverrides ({item: fields})
 async function run(workflowPath, opts) {
   const calls = [], logs = [], failed = [];
   const env = { JIRA_USER_EMAIL: 'dummy@example.test', JIRA_API_TOKEN: 'dummy-jira-token',
@@ -92,10 +92,11 @@ async function run(workflowPath, opts) {
     issues: {
       get: async p => {
         calls.push({ issueGet: p });
+        if (opts.getIssueFails === 'nostatus') throw new Error('socket hang up');
         if (opts.getIssueFails) throw httpErr(opts.getIssueFails, `issues.get ${opts.getIssueFails}`);
         const names = opts.liveLabels || lastSearchLabels;  // the issue itself; default: what search showed
         const labels = opts.liveShape === 'strings' ? names : opts.liveShape === 'absent' ? undefined : names.map(name => ({ name }));
-        return { data: { number: p.issue_number, state: opts.liveState || 'open', labels } };
+        return { data: { number: p.issue_number, state: opts.liveState === 'absent' ? undefined : (opts.liveState || 'open'), labels } };
       },
       getLabel: async p => {
         calls.push({ getLabel: p });
@@ -393,6 +394,12 @@ async function main() {
     }],
     ['a failed issues.get skips the item and fails the run (cannot tell delivered from owed)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, getIssueFails: 500 }, r => {
       red(r, { lines: 1 }, 'CRED_A x dedup-labels', 'could not read labels of open issue #7: HTTP 500', 'issues.get 500'); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 0, 0]);
+    }],
+    ['an issues.get response with no state field is treated as open (pending label still retried)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, liveState: 'absent' }, r => {
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 1, 0]); assert.deepStrictEqual(r.removed, ['pending:jira']);
+    }],
+    ['an issues.get failure without an HTTP status reports HTTP ? and the cause', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, getIssueFails: 'nostatus' }, r => {
+      red(r, { lines: 1 }, 'could not read labels of open issue #7: HTTP ? socket hang up');
     }],
     ['issues.get and removeLabel target the matched issue (number, owner, repo)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, matchedNumber: 4242 }, r => {
       green(r);
