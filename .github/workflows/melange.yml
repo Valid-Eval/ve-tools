@@ -62,7 +62,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/stale/x86_64" && touch "$RUNNER_TEMP/stale/x86_64/old.apk"
           expect_fail "is not empty" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/stale"
           log="$RUNNER_TEMP/test.log"
-          printf '%s\n' "INFO running the main test pipeline" \
+          printf '%s\n' "INFO running test pipeline for subpackage ve-libpq-17" \
             "INFO running test pipeline for subpackage ve-libpq-17-dev" \
             "INFO running test pipeline for subpackage ve-postgresql-17-client" > "$log"
           melange/check-tests-ran.sh melange/libpq-17.yaml "$log"
@@ -118,7 +118,6 @@ jobs:
               exit 0 ;;
             test)
               grep -E '^  openssl-(major|minor):' "$recipe" | tr -d ' \n' > "$SEEN.test"
-              echo "INFO running the main test pipeline"
               for sp in $(sed -n 's/^  - name: \(ve-[a-z0-9-]*\)$/\1/p' "$recipe"); do echo "INFO running test pipeline for subpackage $sp"; done
               exit 0 ;;
           esac
