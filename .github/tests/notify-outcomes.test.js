@@ -64,7 +64,7 @@ function extractScript(path) {
 // opts: items, env, jira/sendgrid ({status, body, badJson} or {throws}), issueFails,
 //       existing ({title: [labels]}, matched by exact phrase), searchItems ([{title, labels}],
 //       returned for every query, like a phrase match), searchThrows, searchBroken (no data),
-//       labelBootstrap ('fail' | 'missing'), addLabelsFails, removeLabelFails (HTTP status)
+//       labelBootstrap ('fail' | 'missing'), removeLabelFails (HTTP status)
 async function run(workflowPath, opts) {
   const calls = [], logs = [], failed = [];
   const env = { JIRA_USER_EMAIL: 'dummy@example.test', JIRA_API_TOKEN: 'dummy-jira-token',
@@ -99,8 +99,7 @@ async function run(workflowPath, opts) {
         if (opts.labelBootstrap === 'fail') throw httpErr(403, 'createLabel 403');
         return {};
       },
-      create: async p => { calls.push({ issueCreate: p }); if (opts.issueFails) throw new Error('GitHub 500'); return { data: { number: n++ } }; },
-      addLabels: async p => { calls.push({ addLabels: p }); if (opts.addLabelsFails) throw new Error('labels 403'); return {}; },
+      create: async p => { calls.push({ issueCreate: p, failed: !!opts.issueFails }); if (opts.issueFails) throw new Error('GitHub 500'); return { data: { number: n++ } }; },
       removeLabel: async p => {
         calls.push({ removeLabel: p });
         if (opts.removeLabelFails) throw httpErr(opts.removeLabelFails, `removeLabel ${opts.removeLabelFails}`);
@@ -131,7 +130,11 @@ async function run(workflowPath, opts) {
   return { calls, logs, failed,
     issues: count(c => c.issueCreate), jira: count(c => c.fetch && c.fetch.includes('atlassian')),
     email: count(c => c.fetch && c.fetch.includes('sendgrid')),
-    added: calls.filter(c => c.addLabels).flatMap(c => c.addLabels.labels),
+    // Pending labels left on newly created issues at the end of the run: the labels issues.create
+    // attached, minus those later removed. (addLabels is no longer called: issues are born pending.)
+    added: calls.filter(c => c.issueCreate && !c.failed).flatMap(c => c.issueCreate.labels.filter(l => l.startsWith('pending:')))
+      .filter(l => !calls.some(c => c.removeLabel && c.removeLabel.name === l)),
+    createdLabels: calls.filter(c => c.issueCreate).map(c => c.issueCreate.labels),
     removed: calls.filter(c => c.removeLabel).map(c => c.removeLabel.name),
     labelCreates: count(c => c.createLabel) };
 }
@@ -158,7 +161,9 @@ async function main() {
   const cases = [
     ['success is green and every channel runs once per item', { items: all }, r => {
       green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [2, 2, 2]);
-      assert.deepStrictEqual(r.added, []); assert.deepStrictEqual(r.removed, []);
+      // Both items are created owing both channels, and each delivered channel's label is removed.
+      assert.deepStrictEqual(r.createdLabels, [['maintenance', 'pending:jira', 'pending:email'], ['maintenance', 'pending:jira', 'pending:email']]);
+      assert.deepStrictEqual(r.added, []); assert.deepStrictEqual(r.removed, ['pending:jira', 'pending:email', 'pending:jira', 'pending:email']);
     }],
     ['zero in-window items is green, no calls', { items: [] }, r => { green(r); assert.strictEqual(r.calls.length, 0); }],
     ['Jira HTTP 500 fails, names item x channel, email still sent', { items: all, jira: { status: 500 } }, r => {
@@ -239,7 +244,7 @@ async function main() {
       red(r, { lines: 1 }, 'CRED_A x retry-state', 'could not remove pending:jira');
     }],
     ['a phrase-matching but non-exact open issue is not treated as the item\'s issue', { items: ['credential'], searchItems: [{ title: 'Rotate credential: CRED_A_OLD', labels: ['pending:jira'] }] }, r => {
-      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]); assert.deepStrictEqual(r.removed, []);
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]); assert.deepStrictEqual(r.removed, ['pending:jira', 'pending:email']);
     }],
     ['retry that fails again stays red and keeps the label', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, jira: { status: 401 } }, r => {
       red(r, 'CRED_A x jira'); assert.deepStrictEqual(r.removed, []); assert.deepStrictEqual(r.added, []);
@@ -247,8 +252,11 @@ async function main() {
     ['retry with the channel still unconfigured stays red (fix-then-rerun must not go falsely green)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:email'] }, env: { SG_API_KEY: '' } }, r => {
       red(r, /CRED_A x email: not configured/); assert.deepStrictEqual(r.removed, []);
     }],
-    ['failure to write retry state is itself a failure', { items: ['credential'], jira: { status: 500 }, addLabelsFails: true }, r => {
-      red(r, 'CRED_A x jira', 'CRED_A x retry-state');
+    ['failure to remove a delivered channel\'s label is itself a failure (a stale label would re-send)', { items: ['credential'], removeLabelFails: 500 }, r => {
+      red(r, 'CRED_A x retry-state', 'could not remove pending:jira');
+    }],
+    ['first run: a Jira failure keeps pending:jira on the new issue and still removes pending:email', { items: ['credential'], jira: { status: 500 } }, r => {
+      red(r, 'CRED_A x jira'); assert.deepStrictEqual(r.removed, ['pending:email']); assert.deepStrictEqual(r.added, ['pending:jira']);
     }],
     // Whole-item failures are loud, recorded in the single summary, and do not stop other items.
     ['dedup search failure skips that item, is recorded, and the next item is still delivered', { items: ['credential', 'review'], searchThrows: true }, r => {
