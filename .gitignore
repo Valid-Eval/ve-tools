@@ -1,4 +1,5 @@
 build/
 dist/
 *.egg-info/
-scratch/
+scratch/__pycache__/
+*.pyc
