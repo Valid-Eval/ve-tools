@@ -19,9 +19,14 @@ concurrency:
 
 jobs:
   test:
-    # Offline: the real script against a fixture `gh` with the clock pinned. Runs under the
-    # runner's bash (5.x); the script targets macOS bash 3.2, which this job cannot check.
-    runs-on: ubuntu-latest
+    # Offline: the real script against a fixture `gh` with the clock pinned. The script targets
+    # macOS bash 3.2 (NOTE 1) and the test runs it with /bin/bash, so macOS is in the matrix;
+    # ubuntu covers bash 5.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
       - name: Checkout repository
@@ -49,8 +54,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           rc=0
-          bin/renovate-health-sweep --org "${GITHUB_REPOSITORY_OWNER}" --repo "${GITHUB_REPOSITORY#*/}" | tee sweep.out || rc=$?
+          bin/renovate-health-sweep --org "${GITHUB_REPOSITORY_OWNER}" --repo "${GITHUB_REPOSITORY#*/}" > sweep.out || rc=$?
+          cat sweep.out
           echo "exit code: ${rc}"
+          [ "${rc}" -eq 0 ] || [ "${rc}" -eq 1 ]
           grep -qE 'read successfully: 1$' sweep.out
           grep -qE 'UNREADABLE +: 0$' sweep.out
-          [ "${rc}" -eq 0 ] || [ "${rc}" -eq 1 ]
+          # This repo has a Renovate dashboard, so gh changing the author-login or body shape
+          # must show up here instead of reading as a finding.
+          grep -qE 'NO_DASHBOARD +: 0$' sweep.out
+          grep -qE 'UNRECOGNIZED +: 0$' sweep.out

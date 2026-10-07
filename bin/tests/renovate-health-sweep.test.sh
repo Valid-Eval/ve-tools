@@ -66,6 +66,15 @@ mk halted "There is an error with this repository's Renovate configuration. As a
 Message: \`Add missing credentials\`"
 mk haltnomsg "Action Required: Renovate will stop PRs until it is resolved."
 mk unrec "Some other renovate issue body"
+mkdir -p "$FIX/realdash"; cp "$HERE/fixtures/real-dashboard.md" "$FIX/realdash/issue-1.md"
+printf '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"%s"}]' "$FRESH" > "$FIX/realdash/issues.json"
+mk future "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2027-10-05T00:00:00Z"}]'
+mk nine "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2026-09-28T00:00:00Z"}]'   # 9 days old
+mk prob_unread "" "$(two)"; cp "$FIX/problems/issue-1.md" "$FIX/prob_unread/issue-1.md"; echo 'HTTP 502' > "$FIX/prob_unread/issue-2.err"
+mk unrec_unread "" "$(two)"; cp "$FIX/unrec/issue-1.md" "$FIX/unrec_unread/issue-1.md"; echo 'HTTP 502' > "$FIX/unrec_unread/issue-2.err"
+mk onlyunread ""; echo 'HTTP 502: Bad Gateway' > "$FIX/onlyunread/issue-1.err"
+mk stale_fresh "" "$(printf '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"%s"},{"number":2,"author":{"login":"app/renovate"},"updatedAt":"%s"}]' "$OLD" "$FRESH")"; cp "$FIX/clean/issue-1.md" "$FIX/stale_fresh/issue-1.md"; cp "$FIX/clean/issue-1.md" "$FIX/stale_fresh/issue-2.md"
+mk cfg_scopeerr "" '[]'; echo 'gh: API rate limit exceeded (HTTP 403)' > "$FIX/cfg_scopeerr/c__root.err"
 mk stale "$DASH" "[{\"number\":1,\"author\":{\"login\":\"app/renovate\"},\"updatedAt\":\"$OLD\"}]"
 mk edge7 "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2026-09-30T00:00:00Z"}]'   # exactly 7 days
 mk edge7p "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2026-09-29T23:59:59Z"}]'  # 7 days + 1s
@@ -100,6 +109,15 @@ echo 'gh: This repository is empty. (HTTP 404)' > "$FIX/d_empty/c__root.err"
 echo 'HTTP 500: server error' > "$FIX/d_err/c__root.err"
 printf 'README.md\n.github\n' > "$FIX/d_none/c__root"; printf 'workflows\n' > "$FIX/d_none/c_.github"
 printf '.github\n' > "$FIX/d_dotgherr/c__root"; echo 'HTTP 403 forbidden' > "$FIX/d_dotgherr/c_.github.err"
+cp -R "$FIX/clean" "$FIX/d_pkgerr"; printf 'package.json\n' > "$FIX/d_pkgerr/c__root"; echo 'HTTP 502 bad gateway' > "$FIX/d_pkgerr/c_package.json.err"
+cp -R "$FIX/clean" "$FIX/d_gh404pkg"; printf '.github\npackage.json\n' > "$FIX/d_gh404pkg/c__root"; echo '{"renovate":{}}' > "$FIX/d_gh404pkg/c_package.json"   # .github listed but 404
+cp -R "$FIX/clean" "$FIX/d_gitlab"; printf '.gitlab\n' > "$FIX/d_gitlab/c__root"; printf 'renovate.json\n' > "$FIX/d_gitlab/c_.gitlab"
+n=0; for cfg in renovate.json renovate.jsonc renovate.json5 .renovaterc .renovaterc.json .renovaterc.jsonc .renovaterc.json5; do
+  n=$((n + 1)); cp -R "$FIX/clean" "$FIX/d_cfg$n"; printf '%s\n' "$cfg" > "$FIX/d_cfg$n/c__root"
+done
+for cfg in renovate.json renovate.jsonc renovate.json5; do
+  n=$((n + 1)); cp -R "$FIX/clean" "$FIX/d_cfg$n"; printf '.github\n' > "$FIX/d_cfg$n/c__root"; printf '%s\n' "$cfg" > "$FIX/d_cfg$n/c_.github"
+done
 
 lists() {  # lists NAME... : write a repo list (non-archived) for GH_REPOLIST
   local out='[' sep=''
@@ -193,6 +211,29 @@ t 'unparseable repo list: fatal, exit 2'           2 'could not parse the repo l
 echo 'HTTP 502' > "$FIX/repolist.json.err"
 t 'repo list error: fatal, exit 2'                 2 'could not list repos' -- --quiet
 rm -f "$FIX/repolist.json.err"; lists_default
+t 'a real dashboard body (sections, checkboxes) reads CLEAN, not PROBLEMS' 0 'CLEAN +: 1' 'PROBLEMS +: 0' '!errored' -- --repo realdash
+t 'dashboard updatedAt in the future: UNREADABLE, exit 2' 2 'UNREADABLE +: 1' 'in the future' 'CLEAN +: 0' -- --repo future
+t 'PROBLEMS + unreadable issue: UNREADABLE, exit 2' 2 'UNREADABLE +: 1' 'PROBLEMS +: 0' -- --repo prob_unread
+t 'UNRECOGNIZED + unreadable issue: UNREADABLE, exit 2' 2 'UNREADABLE +: 1' 'UNRECOGNIZED +: 0' -- --repo unrec_unread
+t 'a stale dashboard and a fresh one: STALE outranks CLEAN' 1 'STALE +: 1' 'CLEAN +: 0' -- --repo stale_fresh
+t 'a clean repo has no partial-read note' 0 'partially read +: 0' '!issue\(s\) unreadable' -- --repo clean
+t 'a wholly unreadable repo is not "partially read"' 2 'partially read +: 0' 'UNREADABLE +: 1' -- --repo ratelimit
+t 'a repo whose only Renovate issue is unreadable is not "partially read"' 2 'partially read +: 0' 'UNREADABLE +: 1' '!issue\(s\) unreadable' -- --repo onlyunread
+t '--quiet prints the summary only' 0 'attempted +: 1' '!dashboard last updated' -- --quiet --repo clean
+t 'halt without a message shows the first line as the reason' 1 'Action Required: Renovate will stop PRs' -- --repo haltnomsg
+t '--stale-days 010 means ten days, not octal 8' 0 'CLEAN +: 1' 'STALE +: 0' -- --repo nine --stale-days 010
+t '--stale-days 08 is accepted (eight days)' 1 'STALE +: 1' 'limit 8' -- --repo nine --stale-days 08
+t 'RENOVATE_SWEEP_NOW is announced on stderr' 0 'RENOVATE_SWEEP_NOW is set' -- --repo clean
+# --all, scope lookup failure
+lists cfg_scopeerr
+t '--all: no dashboard and a failed config lookup is UNREADABLE, exit 2' 2 'UNREADABLE +: 1' 'config lookup failed' 'NO_DASHBOARD_CONFIGURED: 0' -- --all
+lists_default
+# --- more discovery -------------------------------------------------------
+lists d_pkgno d_none
+t 'default scope with no config repos is fatal, not healthy' 2 'no repos in scope' -- 
+lists d_pkgerr d_gh404pkg d_gitlab d_cfg1 d_cfg2 d_cfg3 d_cfg4 d_cfg5 d_cfg6 d_cfg7 d_cfg8 d_cfg9 d_cfg10
+t 'every config name Renovate reads, .gitlab/, .github with a 404, and a failed package.json fetch all keep the repo in scope' 0 'attempted +: 13' -- 
+lists_default
 # --- usage ----------------------------------------------------------------
 t 'repeated --repo is swept once'                  0 'attempted +: 1' -- --repo clean --repo clean
 t '--repo with no value: exit 64'                  64 'needs a value' -- --repo
@@ -208,6 +249,13 @@ for tool in jq sed grep awk head tr cut sort date mktemp rm cat; do ln -s "$(com
 out=$(PATH="$NOGH" /bin/bash "$SWEEP" --repo clean 2>&1); rc=$?
 if [ "$rc" -eq 64 ] && printf '%s' "$out" | grep -q 'gh not found'; then PASS=$((PASS + 1)); echo 'PASS  gh missing: exit 64'
 else FAIL=$((FAIL + 1)); echo "FAIL  gh missing: exit 64 (got $rc)"; fi
+
+NOJQ="$WORK/nojq"; mkdir -p "$NOJQ"
+for tool in gh sed grep awk head tr cut sort date mktemp rm cat; do ln -s "$(command -v $tool 2>/dev/null || echo "$BIN/gh")" "$NOJQ/$tool" 2>/dev/null; done
+ln -sf "$BIN/gh" "$NOJQ/gh"
+out=$(PATH="$NOJQ" /bin/bash "$SWEEP" --repo clean 2>&1); rc=$?
+if [ "$rc" -eq 64 ] && printf '%s' "$out" | grep -q 'jq not found'; then PASS=$((PASS + 1)); echo 'PASS  jq missing: exit 64'
+else FAIL=$((FAIL + 1)); echo "FAIL  jq missing: exit 64 (got $rc)"; fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$PASS" -gt 0 ] && [ "$FAIL" -eq 0 ]

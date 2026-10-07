@@ -147,6 +147,7 @@ done
 case "$STALE_DAYS" in
   ''|*[!0-9]*) printf -- '--stale-days needs a whole number of days (got %s)\n' "$STALE_DAYS" >&2; exit 64 ;;
 esac
+STALE_DAYS=$((10#$STALE_DAYS))   # '08' is a number of days, not a bad octal literal
 if [ "$SWEEP_ALL" -eq 1 ] && [ -n "$EXPLICIT_REPOS" ]; then
   printf -- '--all and --repo cannot be combined: --repo names the repos, --all widens the scope\n' >&2
   exit 64
@@ -164,6 +165,9 @@ trap 'rm -rf "$TMPD"' EXIT
 ERRF="$TMPD/gh.err"
 # RENOVATE_SWEEP_NOW (epoch seconds) is a test hook so staleness can be pinned.
 NOW_EPOCH="${RENOVATE_SWEEP_NOW:-$(date +%s)}"
+if [ -n "${RENOVATE_SWEEP_NOW:-}" ]; then
+  printf 'NOTE: RENOVATE_SWEEP_NOW is set; staleness is judged at epoch %s, not now\n' "$RENOVATE_SWEEP_NOW" >&2
+fi
 
 # First line of gh's stderr, for UNREADABLE reasons.
 last_err() {
@@ -204,21 +208,20 @@ list_dir() {
   printf '%s\n' "$out"
 }
 
-# Echoes the repo name when it is in scope. A lookup that fails for any reason
-# other than a confirmed 404 keeps the repo IN scope, so it gets classified
-# (and surfaces as UNREADABLE if it really cannot be read) instead of being
-# silently dropped before it is ever counted as attempted.
-repo_in_scope() {
+# Prints how a repo relates to Renovate's config discovery: `in` (a config is
+# there), `out` (looked, and there is none), or `unknown <why>` (a lookup failed).
+# Only a confirmed 404 or a full listing without a config is `out`.
+scope_status() {
   local repo="$1" root name dir sub pkg
   root=$(list_dir "$repo" "")
   case $? in
     0) ;;
-    4) return 0 ;;                       # empty repo: nothing to renovate
-    *) printf '%s\n' "$repo"; return 0 ;; # could not look: keep in scope
+    4) echo out; return 0 ;;                                  # empty repo: nothing to renovate
+    *) echo "unknown $(last_err)"; return 0 ;;
   esac
   while IFS= read -r name; do
     if printf '%s\n' "$ROOT_CONFIGS" | grep -qxF "$name"; then
-      printf '%s\n' "$repo"; return 0
+      echo in; return 0
     fi
   done <<EOF
 $root
@@ -229,11 +232,11 @@ EOF
     case $? in
       0) ;;
       4) continue ;;
-      *) printf '%s\n' "$repo"; return 0 ;;
+      *) echo "unknown $(last_err)"; return 0 ;;
     esac
     while IFS= read -r name; do
       if printf '%s\n' "$DOTDIR_CONFIGS" | grep -qxF "$name"; then
-        printf '%s\n' "$repo"; return 0
+        echo in; return 0
       fi
     done <<EOF
 $sub
@@ -243,15 +246,27 @@ EOF
     pkg=$(gh api "repos/${ORG}/${repo}/contents/package.json" \
             -H 'Accept: application/vnd.github.raw' 2>"$ERRF")
     if [ $? -ne 0 ]; then
-      printf '%s\n' "$repo"; return 0
+      echo "unknown $(last_err)"; return 0
     fi
-    # Unparseable package.json: could not look, so keep it in scope.
-    if ! printf '%s' "$pkg" | jq -e 'type == "object"' >/dev/null 2>&1 \
-       || printf '%s' "$pkg" | jq -e 'has("renovate")' >/dev/null 2>&1; then
-      printf '%s\n' "$repo"; return 0
+    # Unparseable package.json: could not look.
+    if ! printf '%s' "$pkg" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      echo "unknown package.json is not parseable"; return 0
+    fi
+    if printf '%s' "$pkg" | jq -e 'has("renovate")' >/dev/null 2>&1; then
+      echo in; return 0
     fi
   fi
-  return 0
+  echo out
+}
+
+# Echoes the repo name when it is in scope. A lookup that fails for any reason
+# other than a confirmed 404 keeps the repo IN scope, so it gets classified
+# (and surfaces as UNREADABLE if it really cannot be read) instead of being
+# silently dropped before it is ever counted as attempted.
+repo_in_scope() {
+  local st
+  st=$(scope_status "$1")
+  case "$st" in out) ;; *) printf '%s\n' "$1" ;; esac
 }
 
 discover_repos() {
@@ -390,6 +405,9 @@ classify_issue() {
             '($now - ($t | fromdateiso8601)) | floor' 2>/dev/null)
     if [ $? -ne 0 ] || [ -z "$age" ]; then
       printf 'UNREADABLE\t%s\t#%s\tdashboard has no usable updatedAt (%s)\n' "$repo" "$num" "${updated_at:-missing}"
+    elif [ "$age" -lt -3600 ]; then
+      # More than an hour in the future: the clocks disagree, so freshness is unknown.
+      printf 'UNREADABLE\t%s\t#%s\tdashboard updatedAt %s is in the future (clock skew?)\n' "$repo" "$num" "$updated_at"
     elif [ "$age" -gt $((STALE_DAYS * 86400)) ]; then
       printf 'STALE\t%s\t#%s\tdashboard last updated %s (%s days ago; limit %s)\n' "$repo" "$num" "${updated_at%%T*}" "$((age / 86400))" "$STALE_DAYS"
     else
@@ -403,13 +421,18 @@ classify_issue() {
 # lookup that fails keeps the repo in scope (repo_in_scope), so it is reported
 # as configured rather than waved through.
 no_dashboard() {
-  local repo="$1" why="$2" in_scope
+  local repo="$1" why="$2" st
   if [ "$SWEEP_ALL" -eq 1 ]; then
-    in_scope=$(repo_in_scope "$repo")
-    if [ -n "$in_scope" ]; then
-      printf 'NO_DASHBOARD_CONFIGURED\t%s\t-\t%s, but the repo has a Renovate config\n' "$repo" "$why"
-      return 0
-    fi
+    st=$(scope_status "$repo")
+    case "$st" in
+      in)
+        printf 'NO_DASHBOARD_CONFIGURED\t%s\t-\t%s, but the repo has a Renovate config\n' "$repo" "$why"
+        return 0 ;;
+      unknown*)
+        # Could not tell whether it has a config: a coverage gap, not a finding about config.
+        printf 'UNREADABLE\t%s\t-\t%s, and the Renovate config lookup failed: %s\n' "$repo" "$why" "${st#unknown }"
+        return 0 ;;
+    esac
   fi
   printf 'NO_DASHBOARD\t%s\t-\t%s\n' "$repo" "$why"
 }
@@ -551,8 +574,9 @@ printf '  CLEAN        : %s\n' "$n_clean"
 
 # Every attempted repo must have produced exactly one classified record; a
 # missing or garbled one would otherwise vanish from every count above. This is
-# defensive: classify_repo always prints one record, so no input reaches it and
-# no test can (recorded exemption, not an oversight).
+# defensive: classify_repo prints exactly one record per repo by construction, so
+# no input is known to reach it and it is not tested (recorded exemption; the
+# '--stale-days 08' bug showed an empty record is possible, so keep the check).
 if [ $((n_read + n_unread)) -ne "$attempted" ]; then
   printf '\nCOVERAGE INCOMPLETE: %s attempted but %s classified.\n' \
     "$attempted" "$((n_read + n_unread))" >&2

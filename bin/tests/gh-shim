@@ -20,14 +20,21 @@ case "$1" in
     fail "$k"
     cat "$k" 2>/dev/null || { echo 'gh: Not Found (HTTP 404)' >&2; exit 1; } ;;
   issue)
-    sub="$2"; shift 2; num=""; repo=""
+    sub="$2"; shift 2; num=""; repo=""; json=""; jq=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --repo) repo=${2#*/}; shift 2 ;;
-        --json|--jq|--state|--limit) shift 2 ;;
+        --json) json=$2; shift 2 ;;
+        --jq) jq=$2; shift 2 ;;
+        --state|--limit) shift 2 ;;
         *) num=$1; shift ;;
       esac
     done
-    if [ "$sub" = list ]; then fail "$F/$repo/issues"; cat "$F/$repo/issues.json"; exit 0; fi
+    # Pin the field contract the script depends on, so renaming a field breaks a test.
+    if [ "$sub" = list ]; then
+      case "$json" in *number*author*updatedAt*|*number*updatedAt*author*) ;; *) echo "gh-shim: issue list needs --json number,author,updatedAt (got '$json')" >&2; exit 1 ;; esac
+      fail "$F/$repo/issues"; cat "$F/$repo/issues.json"; exit 0
+    fi
+    if [ "$json" != body ] || [ "$jq" != .body ]; then echo "gh-shim: issue view needs --json body --jq .body (got '$json' '$jq')" >&2; exit 1; fi
     fail "$F/$repo/issue-$num"; cat "$F/$repo/issue-$num.md" ;;
 esac
