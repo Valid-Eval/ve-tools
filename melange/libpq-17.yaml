@@ -45,9 +45,9 @@ vars:
   pg-commit: 083ac033419f690758508e08c1736089384bbee8
 package:
   version: "17.11"
-  name: ve-libpq-17
+  name: postgresql-17
   epoch: 0
-  description: "PostgreSQL 17 client library (libpq) built against the image's FIPS OpenSSL ${{vars.openssl-major}} core"
+  description: "Origin package for the PostgreSQL 17 client pieces built here against the image's FIPS OpenSSL ${{vars.openssl-major}} core; ships no files itself, see the subpackages ve-libpq-17, ve-libpq-17-dev and ve-postgresql-17-client"
   copyright:
     - license: PostgreSQL
 
@@ -131,41 +131,6 @@ pipeline:
       done
 
   - uses: strip
-
-# Checked on the INSTALLED package, so a configure or toolchain change that drags another library
-# into libpq's closure (zlib, krb5, a second OpenSSL major) fails build.sh here (via `melange test`),
-# not in an image.
-test:
-  environment:
-    contents:
-      repositories:
-        - https://packages.wolfi.dev/os
-      keyring:
-        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
-      packages:
-        - binutils
-        - busybox
-  pipeline:
-    - runs: |
-        # The dynamic loader is listed on some arches (aarch64 glibc) and not others; it isn't a dependency
-        # anyone chooses, so it is the one entry ignored.
-        needed="$(readelf -d /usr/lib/libpq.so.5 | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | grep -v '^ld-linux-' | sort | tr '\n' ' ')"
-        echo "libpq.so.5 NEEDED: $needed"
-        [ "$needed" = "libc.so.6 libcrypto.so.${{vars.openssl-major}} libm.so.6 libssl.so.${{vars.openssl-major}} " ] || {
-          echo "FAIL: libpq.so.5 must link exactly libc, libm, libssl.so.${{vars.openssl-major}} and libcrypto.so.${{vars.openssl-major}}" >&2; exit 1; }
-        # Same soname does not mean same minor: libpq built against newer headers needs newer
-        # versioned symbols and fails only when loaded on the runtime's older library.
-        vers="$(readelf -W -V /usr/lib/libpq.so.5 | sed -n 's/.*Name: OPENSSL_\([0-9][0-9.]*\).*/\1/p' | sort -u | tr '\n' ' ')"
-        echo "libpq.so.5 OpenSSL symbol versions: $vers"
-        [ -n "$vers" ] || { echo "FAIL: libpq.so.5 references no OPENSSL_* symbol versions" >&2; exit 1; }
-        for v in $vers; do
-          maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
-          # A non-numeric minor would make -gt error out and take the pass branch; refuse it.
-          case "$min" in ''|*[!0-9]*) echo "FAIL: cannot parse OPENSSL_$v" >&2; exit 1 ;; esac
-          if [ "$maj" != "${{vars.openssl-major}}" ] || [ "$min" -gt "${{vars.openssl-minor}}" ]; then
-            echo "FAIL: libpq.so.5 needs OPENSSL_$v, outside OpenSSL ${{vars.openssl-major}}.0-${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1
-          fi
-        done
 
 subpackages:
   - name: ve-libpq-17-dev
@@ -277,3 +242,50 @@ subpackages:
               echo "FAIL: pg_dump built without zlib" >&2; exit 1
             fi
             echo "$out" | grep -qi 'connection' || { echo "FAIL: unexpected pg_dump probe output" >&2; exit 1; }
+
+  # Every file the build leaves in the destdir that the -dev and client subpackages above did not
+  # take: libpq.so.5* and the share files. Must stay LAST in this list: melange runs subpackage
+  # pipelines in order, so the others move their files out first.
+  #
+  # Why the package is split from its origin: the apk `origin` (o:) is the main package's name and
+  # melange has no setting to override it. Trivy matches Wolfi/Chainguard advisories by origin, and
+  # with o:ve-libpq-17 the PostgreSQL advisories never matched this libpq at all. The main package is
+  # therefore named for the upstream origin (postgresql-17), ships nothing, and the packages
+  # consumers install keep their names.
+  - name: ve-libpq-17
+    description: "PostgreSQL 17 client library (libpq) built against the image's FIPS OpenSSL ${{vars.openssl-major}} core"
+    pipeline:
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}"
+          mv "${{targets.destdir}}"/usr "${{targets.subpkgdir}}"/
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - binutils
+            - busybox
+      pipeline:
+        - runs: |
+            # The dynamic loader is listed on some arches (aarch64 glibc) and not others; it isn't a dependency
+            # anyone chooses, so it is the one entry ignored.
+            needed="$(readelf -d /usr/lib/libpq.so.5 | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | grep -v '^ld-linux-' | sort | tr '\n' ' ')"
+            echo "libpq.so.5 NEEDED: $needed"
+            [ "$needed" = "libc.so.6 libcrypto.so.${{vars.openssl-major}} libm.so.6 libssl.so.${{vars.openssl-major}} " ] || {
+              echo "FAIL: libpq.so.5 must link exactly libc, libm, libssl.so.${{vars.openssl-major}} and libcrypto.so.${{vars.openssl-major}}" >&2; exit 1; }
+            # Same soname does not mean same minor: libpq built against newer headers needs newer
+            # versioned symbols and fails only when loaded on the runtime's older library.
+            vers="$(readelf -W -V /usr/lib/libpq.so.5 | sed -n 's/.*Name: OPENSSL_\([0-9][0-9.]*\).*/\1/p' | sort -u | tr '\n' ' ')"
+            echo "libpq.so.5 OpenSSL symbol versions: $vers"
+            [ -n "$vers" ] || { echo "FAIL: libpq.so.5 references no OPENSSL_* symbol versions" >&2; exit 1; }
+            for v in $vers; do
+              maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
+              # A non-numeric minor would make -gt error out and take the pass branch; refuse it.
+              case "$min" in ''|*[!0-9]*) echo "FAIL: cannot parse OPENSSL_$v" >&2; exit 1 ;; esac
+              if [ "$maj" != "${{vars.openssl-major}}" ] || [ "$min" -gt "${{vars.openssl-minor}}" ]; then
+                echo "FAIL: libpq.so.5 needs OPENSSL_$v, outside OpenSSL ${{vars.openssl-major}}.0-${{vars.openssl-major}}.${{vars.openssl-minor}}" >&2; exit 1
+              fi
+            done

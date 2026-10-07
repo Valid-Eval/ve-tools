@@ -68,9 +68,13 @@ CI (`.github/workflows/melange.yml`) runs on every PR touching `melange/`, `reno
 
 Merging a recipe change and tagging `melange-<recipe>/vN+1` lets each image-\* Renovate pick up the new tag.
 
-## Known limitation: CVE matching
+## CVE matching
 
-Scanners match apk packages to advisories by package name against Wolfi's security database. A package named `ve-libpq-17` won't be matched to PostgreSQL CVEs that way. Its SBOM records the upstream source (`pkg:github/postgres/postgres@REL_17_x`), but whether a given scanner uses that has not been verified. The primary control is staying on the latest PostgreSQL 17 patch release through the Renovate rule above.
+Trivy matches apk packages to Wolfi/Chainguard advisories by the apk **origin** (`o:`), which melange sets to the main package's name and cannot override. So the main package is named `postgresql-17` (the upstream origin; it ships no files) and `ve-libpq-17`, `ve-libpq-17-dev` and `ve-postgresql-17-client` are its subpackages, with the names consumers install unchanged. Built from this recipe, the installed db records `o:postgresql-17` for every one of them.
+
+Checked 2026-10-07 with `ghcr.io/aquasecurity/trivy` on a rootfs holding the built packages' apk db and a Chainguard `os-release`: at 17.11-r0 no findings; with only the version edited to 17.0-r0, 10 findings (for example CVE-2024-10979) reported against both `ve-libpq-17` and `ve-postgresql-17-client`. The same edit with the previous origin (`o:ve-libpq-17`) reported none, which is the gap this closes. Staying on the latest PostgreSQL 17 patch release through the Renovate rule above is still the primary control.
+
+Consumers need the new tag (`melange-libpq-17/v3` or later). The main package is also built into the repository as `postgresql-17-<version>.apk`, but nothing installs it, so Wolfi's own `postgresql-17` is not affected. A consumer must never `apk add postgresql-17` from this repository.
 
 ## Running locally
 
