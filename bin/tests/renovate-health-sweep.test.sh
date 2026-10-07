@@ -66,14 +66,24 @@ mk halted "There is an error with this repository's Renovate configuration. As a
 Message: \`Add missing credentials\`"
 mk haltnomsg "Action Required: Renovate will stop PRs until it is resolved."
 mk unrec "Some other renovate issue body"
+# realdash: the Dependency Dashboard of Valid-Eval/ve-tools (issue #5), captured 2026-10-07 by
+# `gh issue view 5 --json body --jq .body`; Renovate version not recorded. Refresh by re-capturing.
 mkdir -p "$FIX/realdash"; cp "$HERE/fixtures/real-dashboard.md" "$FIX/realdash/issue-1.md"
 printf '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"%s"}]' "$FRESH" > "$FIX/realdash/issues.json"
 mk future "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2027-10-05T00:00:00Z"}]'
+mk skew_ok "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2026-10-07T00:30:00Z"}]'     # 30 min ahead
+mk skew_edge "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2026-10-07T01:00:00Z"}]'   # exactly 1 h ahead
+mk skew_bad "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2026-10-07T01:00:01Z"}]'    # 1 h 1 s ahead
+mk marker_manual "<!-- manual job -->
+## Detected dependencies"
+mk marker_header "This issue lists Renovate updates and detected dependencies.
+## Detected dependencies"
 mk nine "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2026-09-28T00:00:00Z"}]'   # 9 days old
 mk prob_unread "" "$(two)"; cp "$FIX/problems/issue-1.md" "$FIX/prob_unread/issue-1.md"; echo 'HTTP 502' > "$FIX/prob_unread/issue-2.err"
 mk unrec_unread "" "$(two)"; cp "$FIX/unrec/issue-1.md" "$FIX/unrec_unread/issue-1.md"; echo 'HTTP 502' > "$FIX/unrec_unread/issue-2.err"
 mk onlyunread ""; echo 'HTTP 502: Bad Gateway' > "$FIX/onlyunread/issue-1.err"
 mk stale_fresh "" "$(printf '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"%s"},{"number":2,"author":{"login":"app/renovate"},"updatedAt":"%s"}]' "$OLD" "$FRESH")"; cp "$FIX/clean/issue-1.md" "$FIX/stale_fresh/issue-1.md"; cp "$FIX/clean/issue-1.md" "$FIX/stale_fresh/issue-2.md"
+mk cfg_emptyerr "" '[]'; : > "$FIX/cfg_emptyerr/c__root.err"
 mk cfg_scopeerr "" '[]'; echo 'gh: API rate limit exceeded (HTTP 403)' > "$FIX/cfg_scopeerr/c__root.err"
 mk stale "$DASH" "[{\"number\":1,\"author\":{\"login\":\"app/renovate\"},\"updatedAt\":\"$OLD\"}]"
 mk edge7 "$DASH" '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"2026-09-30T00:00:00Z"}]'   # exactly 7 days
@@ -111,6 +121,7 @@ printf 'README.md\n.github\n' > "$FIX/d_none/c__root"; printf 'workflows\n' > "$
 printf '.github\n' > "$FIX/d_dotgherr/c__root"; echo 'HTTP 403 forbidden' > "$FIX/d_dotgherr/c_.github.err"
 cp -R "$FIX/clean" "$FIX/d_pkgerr"; printf 'package.json\n' > "$FIX/d_pkgerr/c__root"; echo 'HTTP 502 bad gateway' > "$FIX/d_pkgerr/c_package.json.err"
 cp -R "$FIX/clean" "$FIX/d_gh404pkg"; printf '.github\npackage.json\n' > "$FIX/d_gh404pkg/c__root"; echo '{"renovate":{}}' > "$FIX/d_gh404pkg/c_package.json"   # .github listed but 404
+cp -R "$FIX/clean" "$FIX/d_gh404none"; printf '.github\nREADME.md\n' > "$FIX/d_gh404none/c__root"   # .github listed, but 404; nothing else
 cp -R "$FIX/clean" "$FIX/d_gitlab"; printf '.gitlab\n' > "$FIX/d_gitlab/c__root"; printf 'renovate.json\n' > "$FIX/d_gitlab/c_.gitlab"
 n=0; for cfg in renovate.json renovate.jsonc renovate.json5 .renovaterc .renovaterc.json .renovaterc.jsonc .renovaterc.json5; do
   n=$((n + 1)); cp -R "$FIX/clean" "$FIX/d_cfg$n"; printf '%s\n' "$cfg" > "$FIX/d_cfg$n/c__root"
@@ -131,13 +142,31 @@ lists_default() {
 lists_default
 
 PASS=0; FAIL=0
+CASE_TIMEOUT=20   # seconds; a hung script fails its case instead of stalling the suite
+
+# run_limited SECONDS CMD...: run CMD, print its combined output, and return its exit code, or
+# 124 if it was still running after SECONDS and had to be killed. macOS has no `timeout`, so this
+# is a watchdog in plain bash 3.2.
+run_limited() {
+  local secs="$1" pid wd rc outf="$WORK/limited.out"; shift
+  "$@" > "$outf" 2>&1 &
+  pid=$!
+  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  cat "$outf"
+  [ "$rc" -eq 137 ] && rc=124
+  return "$rc"
+}
 t() {
   local name="$1" want="$2" out rc pat ok=1; shift 2
   local pats=""
   while [ $# -gt 0 ] && [ "$1" != "--" ]; do pats="${pats}$1
 "; shift; done
   [ "${1:-}" = "--" ] && shift
-  out=$(GH_FIX="$FIX" PATH="$BIN:$PATH" RENOVATE_SWEEP_NOW="$NOW" /bin/bash "$SWEEP" "$@" 2>&1); rc=$?
+  out=$(GH_FIX="$FIX" PATH="$BIN:$PATH" RENOVATE_SWEEP_NOW="$NOW" run_limited "$CASE_TIMEOUT" /bin/bash "$SWEEP" "$@"); rc=$?
+  [ "$rc" -eq 124 ] && out="TIMED OUT after ${CASE_TIMEOUT}s: $out"
   if [ "$rc" -ne "$want" ]; then ok=0; fi
   while IFS= read -r pat; do
     [ -n "$pat" ] || continue
@@ -151,6 +180,11 @@ PATS
   if [ "$ok" -eq 1 ]; then PASS=$((PASS + 1)); printf 'PASS  %s\n' "$name"
   else FAIL=$((FAIL + 1)); printf 'FAIL  %s (want rc %s, got %s)\n%s\n' "$name" "$want" "$rc" "$out" | sed 's/^/        /'; fi
 }
+
+# The watchdog itself: a command that hangs must be killed and reported as 124.
+wd_out=$(run_limited 1 /bin/bash -c 'sleep 30'); wd_rc=$?
+if [ "$wd_rc" -eq 124 ]; then PASS=$((PASS + 1)); echo 'PASS  a hung command is killed and reported as timed out'
+else FAIL=$((FAIL + 1)); echo "FAIL  a hung command should return 124, got $wd_rc"; fi
 
 # --- one repo, each state -------------------------------------------------
 t 'clean dashboard: CLEAN, exit 0'                 0 'CLEAN +: 1' 'UNREADABLE +: 0' -- --repo clean
@@ -222,18 +256,46 @@ t 'a repo whose only Renovate issue is unreadable is not "partially read"' 2 'pa
 t '--quiet prints the summary only' 0 'attempted +: 1' '!dashboard last updated' -- --quiet --repo clean
 t 'halt without a message shows the first line as the reason' 1 'Action Required: Renovate will stop PRs' -- --repo haltnomsg
 t '--stale-days 010 means ten days, not octal 8' 0 'CLEAN +: 1' 'STALE +: 0' -- --repo nine --stale-days 010
+t '--stale-days 000 means zero days (everything not brand-new is stale)' 1 'STALE +: 1' 'limit 0' -- --repo clean --stale-days 000
+t '--stale-days over 6 digits is a usage error, not a silent wrap' 64 'too large' -- --repo clean --stale-days 213503982334601
+t '--stale-days 0000000000000000000000008 is eight days' 1 'STALE +: 1' 'limit 8' -- --repo nine --stale-days 0000000000000000000000008
 t '--stale-days 08 is accepted (eight days)' 1 'STALE +: 1' 'limit 8' -- --repo nine --stale-days 08
 t 'RENOVATE_SWEEP_NOW is announced on stderr' 0 'RENOVATE_SWEEP_NOW is set' -- --repo clean
+out=$(GH_FIX="$FIX" PATH="$BIN:$PATH" RENOVATE_SWEEP_NOW=1e20 run_limited "$CASE_TIMEOUT" /bin/bash "$SWEEP" --repo clean); rc=$?
+if [ "$rc" -eq 64 ] && printf '%s' "$out" | grep -q 'whole epoch seconds'; then PASS=$((PASS + 1)); echo 'PASS  a non-integer RENOVATE_SWEEP_NOW is a usage error'
+else FAIL=$((FAIL + 1)); echo "FAIL  non-integer RENOVATE_SWEEP_NOW should exit 64 (got $rc)"; fi
 # --all, scope lookup failure
 lists cfg_scopeerr
 t '--all: no dashboard and a failed config lookup is UNREADABLE, exit 2' 2 'UNREADABLE +: 1' 'config lookup failed' 'NO_DASHBOARD_CONFIGURED: 0' -- --all
+lists cfg_emptyerr
+t '--all: a failed config lookup with no stderr still says why' 2 'UNREADABLE +: 1' 'config lookup failed: gh exited non-zero with no message' -- --all
 lists_default
 # --- more discovery -------------------------------------------------------
 lists d_pkgno d_none
 t 'default scope with no config repos is fatal, not healthy' 2 'no repos in scope' -- 
+lists d_gh404none d_root
+t 'a .github that 404s and no other config: out of default scope' 0 'attempted +: 1' '!d_gh404none' -- 
+lists d_gh404none
+mk d_gh404none "" '[]'
+t '--all: a .github that 404s with no config is NO_DASHBOARD, not UNREADABLE' 0 'NO_DASHBOARD +: 1' 'UNREADABLE +: 0' -- --all
+lists_default
+mk d_gh404none "$DASH"
 lists d_pkgerr d_gh404pkg d_gitlab d_cfg1 d_cfg2 d_cfg3 d_cfg4 d_cfg5 d_cfg6 d_cfg7 d_cfg8 d_cfg9 d_cfg10
 t 'every config name Renovate reads, .gitlab/, .github with a 404, and a failed package.json fetch all keep the repo in scope' 0 'attempted +: 13' -- 
 lists_default
+out=$(GH_FIX="$FIX" PATH="$BIN:$PATH" RENOVATE_SWEEP_NOW=99999999999999999999 run_limited "$CASE_TIMEOUT" /bin/bash "$SWEEP" --repo clean); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'no usable updatedAt' && ! printf '%s' "$out" | grep -qE 'CLEAN +: 1'; then PASS=$((PASS + 1)); echo 'PASS  an age too large to compare is UNREADABLE, not CLEAN'
+else FAIL=$((FAIL + 1)); echo "FAIL  an absurd clock should be UNREADABLE exit 2 (got $rc)"; printf '%s\n' "$out" | sed 's/^/        /'; fi
+out=$(GH_FIX="$FIX" PATH="$BIN:$PATH" RENOVATE_SWEEP_NOW=100000000000000000000000000000 run_limited "$CASE_TIMEOUT" /bin/bash "$SWEEP" --repo clean); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'no usable updatedAt'; then PASS=$((PASS + 1)); echo 'PASS  an age that jq prints in exponent form is UNREADABLE, not CLEAN'
+else FAIL=$((FAIL + 1)); echo "FAIL  an exponent-form age should be UNREADABLE exit 2 (got $rc)"; printf '%s\n' "$out" | sed 's/^/        /'; fi
+t 'updatedAt 30 minutes ahead is within the skew tolerance: CLEAN' 0 'CLEAN +: 1' -- --repo skew_ok
+t 'updatedAt exactly 1 hour ahead is still within tolerance: CLEAN' 0 'CLEAN +: 1' -- --repo skew_edge
+t 'updatedAt 1 hour 1 second ahead is UNREADABLE' 2 'UNREADABLE +: 1' 'in the future' -- --repo skew_bad
+t 'a dashboard with only the manual-job marker is recognised' 0 'CLEAN +: 1' -- --repo marker_manual
+t 'a dashboard with only the header sentence is recognised' 0 'CLEAN +: 1' -- --repo marker_header
+t '--stale-days with an empty value is a usage error' 64 'whole number' -- --repo clean --stale-days ''
+t 'default scope: a failed config lookup on a repo with no dashboard is UNREADABLE, not a finding' 2 'UNREADABLE +: 1' 'config lookup failed' 'NO_DASHBOARD +: 0' -- --repo cfg_scopeerr
 # --- usage ----------------------------------------------------------------
 t 'repeated --repo is swept once'                  0 'attempted +: 1' -- --repo clean --repo clean
 t '--repo with no value: exit 64'                  64 'needs a value' -- --repo
@@ -246,14 +308,14 @@ t '--help prints the contract, exit 0'             0 'EXIT CODES' 'REQUIREMENTS'
 # gh missing: a PATH holding the other tools but no gh.
 NOGH="$WORK/nogh"; mkdir -p "$NOGH"
 for tool in jq sed grep awk head tr cut sort date mktemp rm cat; do ln -s "$(command -v $tool)" "$NOGH/$tool" 2>/dev/null; done
-out=$(PATH="$NOGH" /bin/bash "$SWEEP" --repo clean 2>&1); rc=$?
+out=$(run_limited "$CASE_TIMEOUT" env PATH="$NOGH" /bin/bash "$SWEEP" --repo clean); rc=$?
 if [ "$rc" -eq 64 ] && printf '%s' "$out" | grep -q 'gh not found'; then PASS=$((PASS + 1)); echo 'PASS  gh missing: exit 64'
 else FAIL=$((FAIL + 1)); echo "FAIL  gh missing: exit 64 (got $rc)"; fi
 
 NOJQ="$WORK/nojq"; mkdir -p "$NOJQ"
 for tool in gh sed grep awk head tr cut sort date mktemp rm cat; do ln -s "$(command -v $tool 2>/dev/null || echo "$BIN/gh")" "$NOJQ/$tool" 2>/dev/null; done
 ln -sf "$BIN/gh" "$NOJQ/gh"
-out=$(PATH="$NOJQ" /bin/bash "$SWEEP" --repo clean 2>&1); rc=$?
+out=$(run_limited "$CASE_TIMEOUT" env PATH="$NOJQ" /bin/bash "$SWEEP" --repo clean); rc=$?
 if [ "$rc" -eq 64 ] && printf '%s' "$out" | grep -q 'jq not found'; then PASS=$((PASS + 1)); echo 'PASS  jq missing: exit 64'
 else FAIL=$((FAIL + 1)); echo "FAIL  jq missing: exit 64 (got $rc)"; fi
 

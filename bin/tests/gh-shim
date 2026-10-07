@@ -17,6 +17,9 @@ case "$1" in
     p="$2"; r=$(echo "$p" | cut -d/ -f3); sub=${p#repos/*/*/contents}; sub=${sub#/}
     [ -z "$sub" ] && sub=_root
     k="$F/$r/c_$(echo "$sub" | tr / _)"
+    # File contents come back as metadata unless the raw media type is requested; the script
+    # depends on the raw form for package.json.
+    case "$p" in */contents/package.json) case "$*" in *'Accept: application/vnd.github.raw'*) ;; *) echo 'gh-shim: package.json fetch needs -H Accept: application/vnd.github.raw' >&2; exit 1 ;; esac ;; esac
     fail "$k"
     cat "$k" 2>/dev/null || { echo 'gh: Not Found (HTTP 404)' >&2; exit 1; } ;;
   issue)
