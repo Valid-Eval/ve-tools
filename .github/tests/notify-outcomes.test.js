@@ -64,7 +64,7 @@ function extractScript(path) {
 // opts: items, env, jira/sendgrid ({status, body, badJson} or {throws}), issueFails,
 //       existing ({title: [labels]}, matched by exact phrase), searchItems ([{title, labels}],
 //       returned for every query, like a phrase match), searchThrows, searchBroken (no data),
-//       labelBootstrap ('fail' | 'missing' | 'race'), removeLabelFails (HTTP status, every removal), removeLabelFailsFor (one label name, HTTP 500), createDropsLabels, createLabelsShape ('strings' | 'absent'), liveLabels ([labels issues.get returns; default = what search showed]), getIssueFails (HTTP status), existingLabels ([names that getLabel finds; others 404]), itemOverrides ({item: fields})
+//       labelBootstrap ('fail' | 'missing' | 'race'), removeLabelFails (HTTP status, every removal), removeLabelFailsFor (one label name, HTTP 500), matchedNumber (issue number the search returns; default 7), createDropsLabels, createLabelsShape ('strings' | 'absent'), liveLabels ([labels issues.get returns; default = what search showed]), getIssueFails (HTTP status), liveState ('closed'), liveShape ('strings' | 'absent'), existingLabels ([names that getLabel finds; others 404]), itemOverrides ({item: fields})
 async function run(workflowPath, opts) {
   const calls = [], logs = [], failed = [];
   const env = { JIRA_USER_EMAIL: 'dummy@example.test', JIRA_API_TOKEN: 'dummy-jira-token',
@@ -94,7 +94,8 @@ async function run(workflowPath, opts) {
         calls.push({ issueGet: p });
         if (opts.getIssueFails) throw httpErr(opts.getIssueFails, `issues.get ${opts.getIssueFails}`);
         const names = opts.liveLabels || lastSearchLabels;  // the issue itself; default: what search showed
-        return { data: { number: p.issue_number, labels: names.map(name => ({ name })) } };
+        const labels = opts.liveShape === 'strings' ? names : opts.liveShape === 'absent' ? undefined : names.map(name => ({ name }));
+        return { data: { number: p.issue_number, state: opts.liveState || 'open', labels } };
       },
       getLabel: async p => {
         calls.push({ getLabel: p });
@@ -121,7 +122,7 @@ async function run(workflowPath, opts) {
       calls.push({ search: p });
       if (opts.searchThrows) throw httpErr(403, 'secondary rate limit');
       if (opts.searchBroken) return { data: null };
-      const toItem = ([title, labels]) => ({ number: 7, title, labels: ['maintenance', ...labels].map(name => ({ name })) });
+      const toItem = ([title, labels]) => ({ number: opts.matchedNumber || 7, title, labels: ['maintenance', ...labels].map(name => ({ name })) });
       if (opts.searchItems) { lastSearchLabels = (opts.searchItems[0] || {}).labels || []; return { data: { items: opts.searchItems.map(i => (i.noLabelsField ? { number: 7, title: i.title } : toItem([i.title, i.labels]))) } }; }
       const items = Object.entries(existing).filter(([t]) => p.q.includes(`"${t}"`)).map(toItem);
       lastSearchLabels = items[0] ? items[0].labels.map(l => l.name).filter(l => l !== 'maintenance') : [];
@@ -350,8 +351,15 @@ async function main() {
       assert(ex.body.content[0].value.includes('EXPIRED (7 days ago)'), ex.body.content[0].value);
       assert(jx.body.fields.description.includes('EXPIRED (7 days ago)'), jx.body.fields.description);
     }],
-    ['a search hit with no labels field is treated as delivered', { items: ['credential'], searchItems: [{ title: TITLES.CRED_A, noLabelsField: true }] }, r => {
+    ['an open issue whose labels field is absent is treated as delivered', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, liveShape: 'absent' }, r => {
       green(r); assert.strictEqual(r.calls.filter(c => c.issueCreate).length, 0); assert.deepStrictEqual([r.jira, r.email], [0, 0]);
+    }],
+    ['string labels from issues.get are read (defensive shape)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, liveShape: 'strings' }, r => {
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 1, 0]); assert.deepStrictEqual(r.removed, ['pending:jira']);
+    }],
+    ['an issue closed since the search indexed it is skipped even with a pending label (no resend)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, liveState: 'closed' }, r => {
+      green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 0, 0]); assert.deepStrictEqual(r.removed, []);
+      assert(r.logs.some(l => l.includes('is closed (search index lag)')), r.logs.join('\n'));
     }],
     ['any 2xx from SendGrid or Jira counts as delivered', { items: ['credential'], sendgrid: { status: 200 }, jira: { status: 200 } }, r => {
       green(r); assert.deepStrictEqual(r.added, []);
@@ -384,10 +392,12 @@ async function main() {
       green(r); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 0, 0]); assert.deepStrictEqual(r.removed, []);
     }],
     ['a failed issues.get skips the item and fails the run (cannot tell delivered from owed)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, getIssueFails: 500 }, r => {
-      red(r, 'CRED_A x dedup-labels', 'could not read labels of open issue #7'); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 0, 0]);
+      red(r, { lines: 1 }, 'CRED_A x dedup-labels', 'could not read labels of open issue #7: HTTP 500', 'issues.get 500'); assert.deepStrictEqual([r.issues, r.jira, r.email], [0, 0, 0]);
     }],
-    ['issues.get is called on the matched issue number, only when a duplicate is found', { items: ['credential'], existing: { [TITLES.CRED_A]: [] } }, r => {
-      green(r); assert.deepStrictEqual(r.calls.filter(c => c.issueGet).map(c => c.issueGet.issue_number), [7]);
+    ['issues.get and removeLabel target the matched issue (number, owner, repo)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:jira'] }, matchedNumber: 4242 }, r => {
+      green(r);
+      assert.deepStrictEqual(r.calls.filter(c => c.issueGet).map(c => c.issueGet), [{ owner: 'o', repo: 'r', issue_number: 4242 }]);
+      assert.deepStrictEqual(r.calls.filter(c => c.removeLabel).map(c => c.removeLabel.issue_number), [4242]);
     }],
     ['no duplicate -> issues.get is not called', { items: ['credential'] }, r => {
       green(r); assert.strictEqual(r.calls.filter(c => c.issueGet).length, 0);
