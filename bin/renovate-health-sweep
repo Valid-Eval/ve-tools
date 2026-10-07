@@ -19,19 +19,27 @@
 # the thing that counts.
 #
 # USAGE
-#   bin/renovate-health-sweep [--org ORG] [--all] [--repo NAME]... [--quiet]
+#   bin/renovate-health-sweep [--org ORG] [--all | --repo NAME...] [--quiet] [--stale-days N]
 #
 #   (default)      sweep repos that contain a Renovate config file
-#   --all          sweep every non-archived repo in the org
+#   --all          sweep every non-archived repo in the org; a repo that has a
+#                  Renovate config but no dashboard is still a finding (only repos
+#                  with no Renovate config may be NO_DASHBOARD). Not with --repo.
 #   --repo NAME    sweep only the named repo (repeatable; skips discovery)
 #   --quiet        suppress the per-repo detail, print the summary only
+#   --stale-days N a dashboard not updated for more than N days is STALE
+#                  (default 7; see NOTE 9 — revisit this number)
 #
 # EXIT CODES  (deliberately distinct — see "attempted vs achieved" below)
 #   0   read everything it attempted, and every repo is CLEAN (with --all,
-#       NO_DASHBOARD repos are also allowed: most repos legitimately have no
-#       Renovate)
+#       NO_DASHBOARD repos with no Renovate config are also allowed: most repos
+#       legitimately have no Renovate)
 #   1   read everything it attempted, and found something wrong: HALTED,
-#       FAILURES, PROBLEMS, UNRECOGNIZED, or (outside --all) NO_DASHBOARD
+#       FAILURES, PROBLEMS, UNRECOGNIZED, STALE, NO_DASHBOARD_CONFIGURED, or
+#       (outside --all) NO_DASHBOARD. A repo with a definite HALTED or FAILURES
+#       issue that ALSO had an unreadable Renovate issue exits 1, not 2: the
+#       finding stands, and the detail says how many issues went unread
+#       (the coverage block counts such repos as "partially read").
 #   2   could not read one or more repos it attempted  <- coverage is incomplete,
 #       so a "nothing wrong" result from this run does NOT mean there is nothing
 #   64  usage error, or gh/jq missing
@@ -87,6 +95,23 @@
 #    hyphens (github-tags, terraform-provider) and some items are "Can't find
 #    version ..." rather than "Failed to look up ...". Problem bullets can be
 #    WARN, ERROR or FATAL. Take every item in the block / section.
+#
+# 8. KNOWN BLIND SPOT. A repo whose config sets
+#    `suppressNotifications: ["dependencyLookupWarnings"]` removes the "failed to
+#    look up" line from its dashboard, and Renovate logs the lookup failure only
+#    at debug level — so a total lookup failure there reads CLEAN. Nothing here
+#    can see that from the dashboard alone. Nobody uses that option today (checked
+#    local clones only, not Mend app-level config); if one does, this tool cannot
+#    vouch for it.
+#
+# 9. STALE THRESHOLD IS A GUESS. A dashboard Renovate has stopped rewriting (app
+#    uninstalled, job dying early) keeps its last body, which reads CLEAN. So
+#    CLEAN also needs the issue's updatedAt within --stale-days (default 7).
+#    CAVEAT: GitHub bumps updatedAt on a body edit or comment, and Renovate only
+#    edits the dashboard when its content changes, so a quiet healthy repo may
+#    legitimately go longer than 7 days and read STALE. 7 was chosen as a starting
+#    point, not measured. REVISIT after a few sweeps: if healthy repos show STALE,
+#    raise it (a reminder is scheduled in .github/compliance-reviews.yml).
 # ---------------------------------------------------------------------------
 
 set -u
@@ -95,6 +120,7 @@ ORG="Valid-Eval"
 SWEEP_ALL=0
 QUIET=0
 EXPLICIT_REPOS=""
+STALE_DAYS=7
 
 need_value() {
   if [ "$2" -lt 2 ]; then
@@ -108,6 +134,7 @@ while [ $# -gt 0 ]; do
     --org)   need_value "$1" $#; ORG="$2"; shift 2 ;;
     --all)   SWEEP_ALL=1; shift ;;
     --quiet) QUIET=1; shift ;;
+    --stale-days) need_value "$1" $#; STALE_DAYS="$2"; shift 2 ;;
     --repo)  need_value "$1" $#; EXPLICIT_REPOS="${EXPLICIT_REPOS}$2
 "; shift 2 ;;
     -h|--help)
@@ -116,6 +143,14 @@ while [ $# -gt 0 ]; do
     *) printf 'unknown argument: %s (try --help)\n' "$1" >&2; exit 64 ;;
   esac
 done
+
+case "$STALE_DAYS" in
+  ''|*[!0-9]*) printf -- '--stale-days needs a whole number of days (got %s)\n' "$STALE_DAYS" >&2; exit 64 ;;
+esac
+if [ "$SWEEP_ALL" -eq 1 ] && [ -n "$EXPLICIT_REPOS" ]; then
+  printf -- '--all and --repo cannot be combined: --repo names the repos, --all widens the scope\n' >&2
+  exit 64
+fi
 
 for tool in gh jq; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -127,6 +162,8 @@ done
 TMPD=$(mktemp -d 2>/dev/null) || { printf 'FATAL: mktemp failed\n' >&2; exit 2; }
 trap 'rm -rf "$TMPD"' EXIT
 ERRF="$TMPD/gh.err"
+# RENOVATE_SWEEP_NOW (epoch seconds) is a test hook so staleness can be pinned.
+NOW_EPOCH="${RENOVATE_SWEEP_NOW:-$(date +%s)}"
 
 # First line of gh's stderr, for UNREADABLE reasons.
 last_err() {
@@ -233,8 +270,12 @@ discover_repos() {
   # post-filter count could sit under the limit while the list was truncated.
   n=$(printf '%s' "$raw" | jq 'length' 2>/dev/null)
   all_repos=$(printf '%s' "$raw" | jq -r '.[] | select(.isArchived==false) | .name' 2>/dev/null)
-  if [ -z "$n" ] || [ -z "$all_repos" ]; then
+  if [ -z "$n" ]; then
     printf 'FATAL: could not parse the repo list for org %s\n' "$ORG" >&2
+    return 2
+  fi
+  if [ -z "$all_repos" ]; then
+    printf 'FATAL: org %s has no non-archived repos\n' "$ORG" >&2
     return 2
   fi
   if [ "$n" -ge "$REPO_LIMIT" ]; then
@@ -271,10 +312,15 @@ discover_repos() {
 #                 known halt — never assumed healthy
 #   PROBLEMS      no lookup failures, but Repository Problems (WARN/ERROR/FATAL)
 #                 or Errored updates are listed — still needs a human
-#   CLEAN         a dashboard, positively identified, with nothing wrong
+#   STALE         a dashboard with nothing wrong that Renovate has not updated
+#                 for more than --stale-days (NOTE 9): it may have stopped running
+#   CLEAN         a dashboard, positively identified, with nothing wrong, updated
+#                 within --stale-days
 #   NO_DASHBOARD  no Renovate-authored issue at all (or issues are disabled).
 #                 NOT the same as clean: Renovate reports nothing about a file it
 #                 never opened, so this is where an unseen dependency hides.
+#   NO_DASHBOARD_CONFIGURED   (--all only) as NO_DASHBOARD, but the repo has a
+#                 Renovate config: Renovate should publish here and does not.
 #   UNREADABLE    a gh/jq call failed — coverage gap, never counted as clean
 # ---------------------------------------------------------------------------
 # UNREADABLE outranks CLEAN/PROBLEMS/UNRECOGNIZED: an issue we could not read
@@ -282,13 +328,13 @@ discover_repos() {
 # FAILURES outranks it, and then the detail says how many issues went unread.
 state_rank() {
   case "$1" in
-    HALTED) echo 7 ;; FAILURES) echo 6 ;; UNREADABLE) echo 5 ;;
-    UNRECOGNIZED) echo 4 ;; PROBLEMS) echo 3 ;; CLEAN) echo 2 ;; *) echo 1 ;;
+    HALTED) echo 8 ;; FAILURES) echo 7 ;; UNREADABLE) echo 6 ;;
+    UNRECOGNIZED) echo 5 ;; PROBLEMS) echo 4 ;; STALE) echo 3 ;; CLEAN) echo 2 ;; *) echo 1 ;;
   esac
 }
 
 classify_issue() {
-  local repo="$1" num="$2" body reason failures problems errored updated
+  local repo="$1" num="$2" updated_at="$3" body reason failures problems errored age
   body=$(gh issue view "$num" --repo "${ORG}/${repo}" --json body --jq '.body' 2>"$ERRF")
   if [ $? -ne 0 ]; then
     printf 'UNREADABLE\t%s\t#%s\tgh issue view: %s\n' "$repo" "$num" "$(last_err)"
@@ -337,11 +383,35 @@ classify_issue() {
   elif [ -n "$problems" ]; then
     printf 'PROBLEMS\t%s\t#%s\t%s\n' "$repo" "$num" "$problems"
   else
-    # A dashboard Renovate stopped touching still reads CLEAN; show when it was
-    # last updated so a stale one is visible (no threshold is applied).
-    updated=$(gh issue view "$num" --repo "${ORG}/${repo}" --json updatedAt --jq '.updatedAt' 2>/dev/null | cut -c1-10)
-    printf 'CLEAN\t%s\t#%s\tdashboard last updated %s\n' "$repo" "$num" "${updated:-unknown}"
+    # CLEAN also needs a dashboard Renovate is still rewriting (NOTE 9). The
+    # timestamp comes from the issue list call, so there is no second gh call to
+    # swallow; a missing or unparseable one is "could not tell", not CLEAN.
+    age=$(jq -n --arg t "$updated_at" --argjson now "$NOW_EPOCH" \
+            '($now - ($t | fromdateiso8601)) | floor' 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$age" ]; then
+      printf 'UNREADABLE\t%s\t#%s\tdashboard has no usable updatedAt (%s)\n' "$repo" "$num" "${updated_at:-missing}"
+    elif [ "$age" -gt $((STALE_DAYS * 86400)) ]; then
+      printf 'STALE\t%s\t#%s\tdashboard last updated %s (%s days ago; limit %s)\n' "$repo" "$num" "${updated_at%%T*}" "$((age / 86400))" "$STALE_DAYS"
+    else
+      printf 'CLEAN\t%s\t#%s\tdashboard last updated %s\n' "$repo" "$num" "${updated_at%%T*}"
+    fi
   fi
+}
+
+# NO_DASHBOARD, except under --all, where a repo that has a Renovate config and
+# publishes no dashboard is exactly what this tool exists to find. A scope
+# lookup that fails keeps the repo in scope (repo_in_scope), so it is reported
+# as configured rather than waved through.
+no_dashboard() {
+  local repo="$1" why="$2" in_scope
+  if [ "$SWEEP_ALL" -eq 1 ]; then
+    in_scope=$(repo_in_scope "$repo")
+    if [ -n "$in_scope" ]; then
+      printf 'NO_DASHBOARD_CONFIGURED\t%s\t-\t%s, but the repo has a Renovate config\n' "$repo" "$why"
+      return 0
+    fi
+  fi
+  printf 'NO_DASHBOARD\t%s\t-\t%s\n' "$repo" "$why"
 }
 
 # Classifies every open Renovate-authored issue (a repo can carry a dashboard
@@ -349,10 +419,10 @@ classify_issue() {
 classify_repo() {
   local repo="$1" issues nums n num rec best best_rank rank
   issues=$(gh issue list --repo "${ORG}/${repo}" --state open --limit "$ISSUE_LIMIT" \
-             --json number,author 2>"$ERRF")
+             --json number,author,updatedAt 2>"$ERRF")
   if [ $? -ne 0 ]; then
     if grep -q 'has disabled issues' "$ERRF"; then
-      printf 'NO_DASHBOARD\t%s\t-\tissues are disabled on this repo\n' "$repo"
+      no_dashboard "$repo" "issues are disabled on this repo"
     else
       printf 'UNREADABLE\t%s\t-\tgh issue list: %s\n' "$repo" "$(last_err)"
     fi
@@ -371,20 +441,20 @@ classify_repo() {
 
   # NOTE 3 + NOTE 4: author matched client-side, title never matched.
   nums=$(printf '%s' "$issues" \
-         | jq -r '.[] | select((.author.login // "") | test("renovate";"i")) | .number' 2>/dev/null)
+         | jq -r '.[] | select((.author.login // "") | test("renovate";"i")) | "\(.number)\t\(.updatedAt // "")"' 2>/dev/null)
   if [ $? -ne 0 ]; then
     printf 'UNREADABLE\t%s\t-\tcould not parse issue authors\n' "$repo"
     return 0
   fi
   if [ -z "$nums" ]; then
-    printf 'NO_DASHBOARD\t%s\t-\tno Renovate-authored open issue\n' "$repo"
+    no_dashboard "$repo" "no Renovate-authored open issue"
     return 0
   fi
 
   best=""; best_rank=0; n_unread_issues=0
-  while IFS= read -r num; do
+  while IFS="$(printf '\t')" read -r num updated_at; do
     [ -n "$num" ] || continue
-    rec=$(classify_issue "$repo" "$num")
+    rec=$(classify_issue "$repo" "$num" "$updated_at")
     case "$rec" in UNREADABLE*) n_unread_issues=$((n_unread_issues + 1)) ;; esac
     rank=$(state_rank "${rec%%	*}")
     if [ "$rank" -gt "$best_rank" ]; then best="$rec"; best_rank="$rank"; fi
@@ -439,14 +509,18 @@ n_unrec=$(count_state UNRECOGNIZED)
 n_prob=$(count_state PROBLEMS)
 n_clean=$(count_state CLEAN)
 n_nodash=$(count_state NO_DASHBOARD)
+n_nodash_cfg=$(count_state NO_DASHBOARD_CONFIGURED)
+n_stale=$(count_state STALE)
 n_unread=$(count_state UNREADABLE)
-n_read=$((n_halt + n_fail + n_unrec + n_prob + n_clean + n_nodash))
+n_read=$((n_halt + n_fail + n_unrec + n_prob + n_clean + n_nodash + n_nodash_cfg + n_stale))
+# Repos that carry a finding but had a Renovate issue we could not read.
+n_partial=$(printf '%s' "$results" | grep -c 'unreadable)$')
 
 if [ "$QUIET" -eq 0 ]; then
   printf '\n=== Renovate health sweep — %s ===\n' "$ORG"
   printf '%s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  for state in HALTED FAILURES UNRECOGNIZED PROBLEMS NO_DASHBOARD UNREADABLE CLEAN; do
+  for state in HALTED FAILURES UNRECOGNIZED PROBLEMS STALE NO_DASHBOARD_CONFIGURED NO_DASHBOARD UNREADABLE CLEAN; do
     block=$(printf '%s' "$results" | grep "^${state}	")
     [ -n "$block" ] || continue
     printf -- '--- %s ---\n' "$state"
@@ -463,17 +537,22 @@ fi
 printf '=== coverage ===\n'
 printf '  attempted        : %s\n' "$attempted"
 printf '  read successfully: %s\n' "$n_read"
+printf '  partially read   : %s  (a finding stands, but one of the repo'"'"'s Renovate issues was unreadable)\n' "$n_partial"
 printf '  UNREADABLE       : %s\n' "$n_unread"
 printf '=== findings ===\n'
 printf '  HALTED       : %s\n' "$n_halt"
 printf '  FAILURES     : %s\n' "$n_fail"
 printf '  UNRECOGNIZED : %s\n' "$n_unrec"
 printf '  PROBLEMS     : %s\n' "$n_prob"
+printf '  STALE        : %s\n' "$n_stale"
+printf '  NO_DASHBOARD_CONFIGURED: %s\n' "$n_nodash_cfg"
 printf '  NO_DASHBOARD : %s\n' "$n_nodash"
 printf '  CLEAN        : %s\n' "$n_clean"
 
 # Every attempted repo must have produced exactly one classified record; a
-# missing or garbled one would otherwise vanish from every count above.
+# missing or garbled one would otherwise vanish from every count above. This is
+# defensive: classify_repo always prints one record, so no input reaches it and
+# no test can (recorded exemption, not an oversight).
 if [ $((n_read + n_unread)) -ne "$attempted" ]; then
   printf '\nCOVERAGE INCOMPLETE: %s attempted but %s classified.\n' \
     "$attempted" "$((n_read + n_unread))" >&2
@@ -486,7 +565,8 @@ if [ "$n_unread" -gt 0 ]; then
   exit 2
 fi
 
-if [ "$n_halt" -gt 0 ] || [ "$n_fail" -gt 0 ] || [ "$n_unrec" -gt 0 ] || [ "$n_prob" -gt 0 ]; then
+if [ "$n_halt" -gt 0 ] || [ "$n_fail" -gt 0 ] || [ "$n_unrec" -gt 0 ] || [ "$n_prob" -gt 0 ] \
+   || [ "$n_stale" -gt 0 ] || [ "$n_nodash_cfg" -gt 0 ]; then
   exit 1
 fi
 if [ "$SWEEP_ALL" -eq 0 ] && [ "$n_nodash" -gt 0 ]; then

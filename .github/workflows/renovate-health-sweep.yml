@@ -1,0 +1,56 @@
+name: renovate-health-sweep
+
+# Guards for bin/renovate-health-sweep, whose whole job is to never report "could not tell" as
+# "healthy". pull_request only (never pull_request_target): no secrets, a read-only token.
+on:
+  pull_request:
+    paths:
+      - "bin/renovate-health-sweep"
+      - "bin/tests/**"
+      - ".github/workflows/renovate-health-sweep.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate-health-sweep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Offline: the real script against a fixture `gh` with the clock pinned. Runs under the
+    # runner's bash (5.x); the script targets macOS bash 3.2, which this job cannot check.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run the sweep tests
+        run: bin/tests/renovate-health-sweep.test.sh
+
+  smoke:
+    # The fixture tests prove the script's own logic; this proves the real `gh` still behaves the
+    # way the fixture pretends (author login shape, issue-list JSON, error text). It sweeps one
+    # repo, this one: exit 0 (clean) or 1 (a finding) are both fine here, and anything unreadable
+    # is a failure.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Sweep this repo with the real gh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rc=0
+          bin/renovate-health-sweep --org "${GITHUB_REPOSITORY_OWNER}" --repo "${GITHUB_REPOSITORY#*/}" | tee sweep.out || rc=$?
+          echo "exit code: ${rc}"
+          grep -qE 'read successfully: 1$' sweep.out
+          grep -qE 'UNREADABLE +: 0$' sweep.out
+          [ "${rc}" -eq 0 ] || [ "${rc}" -eq 1 ]

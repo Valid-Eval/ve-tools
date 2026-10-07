@@ -29,6 +29,7 @@ cd credbridge && go build -o ../build/credbridge .
 - `credbridge/` — Go 1.22+ binary for AWS ECR credential bridging in containers
 - `fips-invariant-check/` — Go static binary run as the last step of every VE image build: one OpenSSL core per image, no embedded crypto, optional behavioural probe. Tags `fips-invariant-check/vX.Y.Z`. See its README.
 - `bin/` — kubectl plugins (`kubectl-ve-console`, `kubectl-ve-queue`, `kubectl-ve-queues`, `dockercredrot`)
+- `bin/renovate-health-sweep` — org-wide report of what Renovate cannot reach (reads each repo's Dependency Dashboard; never reports "could not tell" as healthy). Offline tests: `bin/tests/renovate-health-sweep.test.sh` (CI: `.github/workflows/renovate-health-sweep.yml`). The 7-day STALE threshold is a starting guess with a scheduled review in `.github/compliance-reviews.yml`
 - `.github/workflows/credential-rotation-reminder.yml` — Daily credential expiry and compliance-review due-date checks → GH issues + Jira + email
 - `.github/credential-rotations.yml` — Credential inventory with expiry dates and rotation steps (credentials only)
 - `.github/compliance-reviews.yml` — Scheduled compliance reviews (e.g. exception re-reviews) with due dates, steps, and links to the ve-compliance record and Jira ticket

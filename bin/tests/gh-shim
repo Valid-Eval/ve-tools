@@ -1,0 +1,33 @@
+#!/bin/bash
+# Fixture `gh` for bin/tests/renovate-health-sweep.test.sh: serves only what
+# bin/renovate-health-sweep calls, from the directory in $GH_FIX.
+#   repo list                         -> $GH_REPOLIST (default $GH_FIX/repolist.json)
+#   api repos/O/R/contents[/PATH]     -> $GH_FIX/R/c_<PATH with / as _>   (root: c__root)
+#   issue list --repo O/R             -> $GH_FIX/R/issues.json
+#   issue view N --repo O/R           -> $GH_FIX/R/issue-N.md
+# A sibling file <name>.err makes that call print its contents to stderr and
+# exit 1, the way gh reports an HTTP error.
+F="$GH_FIX"
+fail() { if [ -f "$1.err" ]; then cat "$1.err" >&2; exit 1; fi; }
+case "$1" in
+  repo)
+    L="${GH_REPOLIST:-$F/repolist.json}"
+    fail "$L"; cat "$L"; exit 0 ;;
+  api)
+    p="$2"; r=$(echo "$p" | cut -d/ -f3); sub=${p#repos/*/*/contents}; sub=${sub#/}
+    [ -z "$sub" ] && sub=_root
+    k="$F/$r/c_$(echo "$sub" | tr / _)"
+    fail "$k"
+    cat "$k" 2>/dev/null || { echo 'gh: Not Found (HTTP 404)' >&2; exit 1; } ;;
+  issue)
+    sub="$2"; shift 2; num=""; repo=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --repo) repo=${2#*/}; shift 2 ;;
+        --json|--jq|--state|--limit) shift 2 ;;
+        *) num=$1; shift ;;
+      esac
+    done
+    if [ "$sub" = list ]; then fail "$F/$repo/issues"; cat "$F/$repo/issues.json"; exit 0; fi
+    fail "$F/$repo/issue-$num"; cat "$F/$repo/issue-$num.md" ;;
+esac
