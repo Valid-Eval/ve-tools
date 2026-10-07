@@ -64,14 +64,14 @@ function extractScript(path) {
 // opts: items, env, jira/sendgrid ({status, body, badJson} or {throws}), issueFails,
 //       existing ({title: [labels]}, matched by exact phrase), searchItems ([{title, labels}],
 //       returned for every query, like a phrase match), searchThrows, searchBroken (no data),
-//       labelBootstrap ('fail' | 'missing'), removeLabelFails (HTTP status)
+//       labelBootstrap ('fail' | 'missing'), removeLabelFails (HTTP status), createDropsLabels, itemOverrides ({item: fields})
 async function run(workflowPath, opts) {
   const calls = [], logs = [], failed = [];
   const env = { JIRA_USER_EMAIL: 'dummy@example.test', JIRA_API_TOKEN: 'dummy-jira-token',
     SG_API_KEY: 'dummy-sg-key', ...opts.env };
   const saved = { ...process.env };
   for (const k of ['JIRA_USER_EMAIL', 'JIRA_API_TOKEN', 'SG_API_KEY', 'ALLOW_UNCONFIGURED_CHANNELS']) delete process.env[k];
-  Object.assign(process.env, env, { CHECK_RESULT: JSON.stringify({ due: opts.items.map(k => ITEMS[k]) }) });
+  Object.assign(process.env, env, { CHECK_RESULT: JSON.stringify({ due: opts.items.map(k => ({ ...ITEMS[k], ...((opts.itemOverrides || {})[k] || {}) })) }) });
   const realFetch = global.fetch, realLog = console.log, realErr = console.error;
   global.fetch = async (url, init) => {
     calls.push({ fetch: url, init });
@@ -99,7 +99,7 @@ async function run(workflowPath, opts) {
         if (opts.labelBootstrap === 'fail') throw httpErr(403, 'createLabel 403');
         return {};
       },
-      create: async p => { calls.push({ issueCreate: p, failed: !!opts.issueFails }); if (opts.issueFails) throw new Error('GitHub 500'); return { data: { number: n++ } }; },
+      create: async p => { calls.push({ issueCreate: p, failed: !!opts.issueFails }); if (opts.issueFails) throw new Error('GitHub 500'); return { data: { number: n++, labels: opts.createDropsLabels ? [] : p.labels.map(name => ({ name })) } }; },
       removeLabel: async p => {
         calls.push({ removeLabel: p });
         if (opts.removeLabelFails) throw httpErr(opts.removeLabelFails, `removeLabel ${opts.removeLabelFails}`);
@@ -111,7 +111,7 @@ async function run(workflowPath, opts) {
       if (opts.searchThrows) throw httpErr(403, 'secondary rate limit');
       if (opts.searchBroken) return { data: null };
       const toItem = ([title, labels]) => ({ number: 7, title, labels: ['maintenance', ...labels].map(name => ({ name })) });
-      if (opts.searchItems) return { data: { items: opts.searchItems.map(i => toItem([i.title, i.labels])) } };
+      if (opts.searchItems) return { data: { items: opts.searchItems.map(i => (i.noLabelsField ? { number: 7, title: i.title } : toItem([i.title, i.labels]))) } };
       const items = Object.entries(existing).filter(([t]) => p.q.includes(`"${t}"`)).map(toItem);
       return { data: { items } };
     } },
@@ -140,6 +140,8 @@ async function run(workflowPath, opts) {
 }
 
 const issueOf = r => r.calls.find(x => x.issueCreate).issueCreate;
+// Parsed outgoing request bodies, in call order.
+const fetchesTo = (r, host) => r.calls.filter(c => c.fetch && c.fetch.includes(host)).map(c => ({ url: c.fetch, headers: c.init.headers, body: JSON.parse(c.init.body) }));
 const green = r => assert.deepStrictEqual(r.failed, []);
 // red(r, ...parts) or red(r, {lines: n}, ...parts): one setFailed containing every part,
 // and optionally exactly n recorded failures (summary lines after the header).
@@ -186,7 +188,7 @@ async function main() {
       red(r, 'CRED_A x jira'); assert.strictEqual(r.failed[0].split('\n').length, 2);
     }],
     ['GitHub issue failure fails; Jira and email still attempted; no label call', { items: ['credential'], issueFails: true }, r => {
-      red(r, 'CRED_A x github-issue'); assert.deepStrictEqual([r.jira, r.email], [1, 1]); assert.deepStrictEqual(r.added, []);
+      red(r, 'CRED_A x github-issue'); assert.deepStrictEqual([r.jira, r.email], [1, 1]); assert.deepStrictEqual(r.added, []); assert.deepStrictEqual(r.removed, []);
     }],
     ['all channels failing for several items are all listed in one setFailed', { items: all, issueFails: true, jira: { status: 500 }, sendgrid: { throws: 'boom' } }, r => {
       red(r); assert.strictEqual(r.failed[0].split('\n').length, 1 + 6);
@@ -252,6 +254,9 @@ async function main() {
     ['retry with the channel still unconfigured stays red (fix-then-rerun must not go falsely green)', { items: ['credential'], existing: { [TITLES.CRED_A]: ['pending:email'] }, env: { SG_API_KEY: '' } }, r => {
       red(r, /CRED_A x email: not configured/); assert.deepStrictEqual(r.removed, []);
     }],
+    ['an issue created without its pending labels is a recorded failure (the retry state would otherwise be missing)', { items: ['credential'], createDropsLabels: true }, r => {
+      red(r, 'CRED_A x retry-state', 'created without pending:jira, pending:email');
+    }],
     ['failure to remove a delivered channel\'s label is itself a failure (a stale label would re-send)', { items: ['credential'], removeLabelFails: 500 }, r => {
       red(r, 'CRED_A x retry-state', 'could not remove pending:jira');
     }],
@@ -284,6 +289,57 @@ async function main() {
       assert.strictEqual(c.title, TITLES.CRED_A); assert(!c.body.includes('### References'), c.body);
       assert.strictEqual(v.title, TITLES.REVIEW_A);
       for (const line of ['### References', '- Compliance record: https://example.test/record', '- Jira: https://valideval.atlassian.net/browse/INF-382']) assert(v.body.includes(line), v.body);
+    }],
+    // Dedup query, test credentials, routing and payload content (what actually goes out).
+    ['dedup search is scoped to this repo, open issues, the maintenance label and the exact title', { items: ['credential'] }, r => {
+      green(r); const q = r.calls.find(c => c.search).search.q;
+      for (const part of ['repo:o/r', 'is:issue', 'is:open', 'in:title', `"${TITLES.CRED_A}"`, 'label:maintenance']) assert(q.includes(part), `${part} missing from: ${q}`);
+    }],
+    ['first-run Jira network error keeps pending:jira and removes pending:email', { items: ['credential'], jira: { throws: 'ECONNREFUSED' } }, r => {
+      red(r, /CRED_A x jira: ECONNREFUSED/); assert.deepStrictEqual(r.added, ['pending:jira']); assert.deepStrictEqual(r.removed, ['pending:email']);
+    }],
+    ['test credential skips dedup and is prefixed and labelled test everywhere', { items: ['test'], existing: { 'Rotate credential: TEST_CREDENTIAL': [] } }, r => {
+      green(r); assert(!r.calls.some(c => c.search), 'test credentials must not search for an existing issue');
+      assert.deepStrictEqual([r.issues, r.jira, r.email], [1, 1, 1]);
+      const issue = r.calls.find(c => c.issueCreate).issueCreate;
+      assert(issue.title.startsWith('[TEST] '), issue.title); assert(issue.labels.includes('test'), issue.labels);
+      assert(fetchesTo(r, 'atlassian')[0].body.fields.summary.startsWith('[TEST] '));
+      assert(fetchesTo(r, 'sendgrid')[0].body.subject.includes('[TEST] '));
+    }],
+    ['each item is routed by its own email_to / email_from / jira_project', { items: all }, r => {
+      green(r); const [jc, jr] = fetchesTo(r, 'atlassian'), [ec, er] = fetchesTo(r, 'sendgrid');
+      assert.deepStrictEqual([jc.body.fields.project.key, jr.body.fields.project.key], ['VEP', 'INF']);
+      for (const e of [ec, er]) { assert.strictEqual(e.body.personalizations[0].to[0].email, 'to@example.test'); assert.strictEqual(e.body.from.email, 'from@example.test'); }
+    }],
+    ['email falls back to email_to as the sender when email_from is empty', { items: ['credential'], itemOverrides: { credential: { email_from: '' } } }, r => {
+      green(r); assert.strictEqual(fetchesTo(r, 'sendgrid')[0].body.from.email, 'to@example.test');
+    }],
+    ['Jira payload: auth, type, priority (own or per-kind default), wiki steps, references, footer', { items: ['credential', 'review'] }, r => {
+      green(r); const [jc, jr] = fetchesTo(r, 'atlassian');
+      assert.strictEqual(jc.url, 'https://valideval.atlassian.net/rest/api/2/issue');
+      assert.strictEqual(jc.headers.Authorization, 'Basic ' + Buffer.from('dummy@example.test:dummy-jira-token').toString('base64'));
+      assert.strictEqual(jc.body.fields.issuetype.name, 'Task');
+      assert.strictEqual(jc.body.fields.priority.name, 'Highest');  // the item's own jira_priority
+      assert.strictEqual(jr.body.fields.priority.name, 'High');     // review default
+      assert(jc.body.fields.description.includes('# Rotate\n# Update'), jc.body.fields.description);
+      assert(jr.body.fields.description.includes('Compliance record: https://example.test/record'));
+      assert(jr.body.fields.description.includes('Jira: https://valideval.atlassian.net/browse/INF-382'));
+      assert(jc.body.fields.description.endsWith('close this ticket.'));
+      assert(jr.body.fields.description.includes('close this ticket.'));
+    }],
+    ['SendGrid payload: auth, notes and references present; expired item says how long ago', { items: ['credential', 'review', 'expired'] }, r => {
+      green(r); const [ec, er, ex] = fetchesTo(r, 'sendgrid'), [, , jx] = fetchesTo(r, 'atlassian');
+      assert.strictEqual(ec.url, 'https://api.sendgrid.com/v3/mail/send'); assert.strictEqual(ec.headers.Authorization, 'Bearer dummy-sg-key');
+      assert(ec.body.content[0].value.includes('Notes:\na note'));
+      assert(er.body.content[0].value.includes('References:') && er.body.content[0].value.includes('Compliance record: https://example.test/record'));
+      assert(ex.body.content[0].value.includes('EXPIRED (7 days ago)'), ex.body.content[0].value);
+      assert(jx.body.fields.description.includes('EXPIRED (7 days ago)'), jx.body.fields.description);
+    }],
+    ['a search hit with no labels field is treated as delivered', { items: ['credential'], searchItems: [{ title: TITLES.CRED_A, noLabelsField: true }] }, r => {
+      green(r); assert.strictEqual(r.calls.filter(c => c.issueCreate).length, 0); assert.deepStrictEqual([r.jira, r.email], [0, 0]);
+    }],
+    ['any 2xx from SendGrid or Jira counts as delivered', { items: ['credential'], sendgrid: { status: 200 }, jira: { status: 200 } }, r => {
+      green(r); assert.deepStrictEqual(r.added, []);
     }],
     // Non-fatal setup path: not a recorded failure.
     ['label bootstrap failure does not stop delivery', { items: ['credential'], labelBootstrap: 'fail' }, r => {
