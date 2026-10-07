@@ -118,7 +118,6 @@ jobs:
               exit 0 ;;
             test)
               grep -E '^  openssl-(major|minor):' "$recipe" | tr -d ' \n' > "$SEEN.test"
-              echo "INFO running the main test pipeline"
               for sp in $(sed -n 's/^  - name: \(ve-[a-z0-9-]*\)$/\1/p' "$recipe"); do echo "INFO running test pipeline for subpackage $sp"; done
               exit 0 ;;
           esac
