@@ -75,6 +75,8 @@ func checkAgainstOracle(t *testing.T, data []byte, chunk, overlap int) {
 var oracleSeeds = []string{
 	// each branch alone
 	"OpenSSL 3.6.4", "BoringSSL", "AWS-LC", "LibreSSL 3", "aws-lc/crypto/fipsmodule",
+	// 0 and 9 in every digit position, so a narrowed digit class ([1-9], [0-8]) is caught
+	"OpenSSL 0.9.8", "OpenSSL 9.0.0", "LibreSSL 0", "LibreSSL 9.0",
 	"crypto/evp/digest.c", "crypto/sha/sha256.cc", "ssl/ssl_lib.c", "ssl/s3_lib.cc", "ssl/t1_lib.c", "ssl/ssl_cert.c",
 	"third_party/boringssl/src/crypto/x.c",
 	// overlaps and repeats
@@ -163,6 +165,18 @@ func TestMarkerBranches(t *testing.T) {
 		addLibMarkers([]byte(text), got)
 		if len(got) > 0 || hasSourceMarker([]byte(text)) {
 			t.Errorf("%q must match nothing: markers %v, source %v", text, slices.Sorted(maps.Keys(got)), hasSourceMarker([]byte(text)))
+		}
+	}
+}
+
+// Each digit class in the lib branches must accept 0 through 9: "OpenSSL 0.9.8" is a real version
+// string, and a class narrowed to [1-9] or [0-8] would miss it silently.
+func TestMarkerDigitBoundaries(t *testing.T) {
+	for _, want := range []string{"OpenSSL 0.9.8", "OpenSSL 9.0.0", "OpenSSL 1.0.9", "LibreSSL 0", "LibreSSL 9"} {
+		got := map[string]bool{}
+		addLibMarkers([]byte("x "+want+" x"), got)
+		if !got[want] || len(got) != 1 {
+			t.Errorf("%q: markers %v, want exactly %q", want, slices.Sorted(maps.Keys(got)), want)
 		}
 	}
 }
