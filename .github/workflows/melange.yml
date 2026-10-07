@@ -83,36 +83,60 @@ jobs:
           if ls -d "$RUNNER_TEMP"/melange-ws.* 2>/dev/null; then echo "::error::build.sh left its workspace behind"; exit 1; fi
           # OPENSSL_LINE must be <major>.<minor>, rejected before any docker call.
           OPENSSL_LINE= expect_fail "OPENSSL_LINE is set but empty" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/x"
-          for bad in 4 4.0.3 .4 4. a.b 4..0; do
-            OPENSSL_LINE="$bad" expect_fail "OPENSSL_LINE must be <major>.<minor>" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/x"
+          for bad in 4 4.0.3 .4 4. a.b 4..0 04.0 3.06 0.0 5.0 99999.0; do
+            OPENSSL_LINE="$bad" expect_fail "OPENSSL_LINE must be <major>.<minor> with major 3 or 4" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/x"
           done
-          # A recipe without the var lines cannot be rendered: build.sh must stop, not build the default.
+          # A recipe without a var line, or with one twice, cannot be rendered: build.sh must stop
+          # rather than build the default (missing) or leave a second copy unrendered (duplicate).
           printf 'package:\n  name: x\nvars:\n  openssl-minor: "6"\n' > "$RUNNER_TEMP/novars.yaml"
-          OPENSSL_LINE=4.0 expect_fail "must define '  openssl-major" melange/build.sh "$RUNNER_TEMP/novars.yaml" amd64 "$RUNNER_TEMP/nv"
-          # With OPENSSL_LINE, melange build receives the rendered recipe at that line; without it, the
-          # recipe's own defaults. A stub docker records the vars of the recipe `melange build` was handed.
+          OPENSSL_LINE=4.0 expect_fail "must define '  openssl-major: \"N\"' exactly once (found 0)" melange/build.sh "$RUNNER_TEMP/novars.yaml" amd64 "$RUNNER_TEMP/nv"
+          sed 's/^  openssl-major: "3"$/  openssl-major: "3"\n  openssl-major: "3"/' melange/libpq-17.yaml > "$RUNNER_TEMP/dupvars.yaml"
+          [ "$(grep -c '^  openssl-major: ' "$RUNNER_TEMP/dupvars.yaml")" = 2 ] || { echo "::error::dupvars fixture not built"; exit 1; }
+          OPENSSL_LINE=4.0 expect_fail "must define '  openssl-major: \"N\"' exactly once (found 2)" melange/build.sh "$RUNNER_TEMP/dupvars.yaml" amd64 "$RUNNER_TEMP/dv"
+          # The rendered recipe must reach `melange build` AND `melange test`, and check-tests-ran.sh
+          # must accept the run. A stub docker records the vars of the recipe each melange command
+          # is handed, fakes a signed repo for `build` (so build.sh's output checks pass) and a test
+          # log naming every test block for `test`; build.sh must then run to the end (exit 0).
           mkdir -p "$RUNNER_TEMP/stub2"
           cat > "$RUNNER_TEMP/stub2/docker" <<'STUB'
           #!/bin/sh
-          prev=
+          prev=; cmd=; recipe=; out=; key=
           for a in "$@"; do
-            case "$a" in *.yaml) [ "$prev" = build ] && grep -E '^  openssl-(major|minor):' "$a" | tr -d ' \n' > "$SEEN" ;; esac
+            [ "$prev" = keygen ] && key="$a"
+            case "$a" in
+              build|test|keygen) [ -z "$cmd" ] && [ "$prev" != "--arch" ] && cmd="$a" ;;
+            esac
+            case "$a" in *.yaml) [ -z "$recipe" ] && recipe="$a" ;; esac
+            [ "$prev" = --out-dir ] && out="$a"
             prev="$a"
           done
-          case " $* " in *" keygen "*) exit 0 ;; esac
+          case "$cmd" in
+            keygen) echo fake > "$key.pub"; exit 0 ;;
+            build)
+              grep -E '^  openssl-(major|minor):' "$recipe" | tr -d ' \n' > "$SEEN.build"
+              mkdir -p "$out/x86_64" && echo fake > "$out/x86_64/fake.apk" && echo fake > "$out/x86_64/APKINDEX.tar.gz"
+              exit 0 ;;
+            test)
+              grep -E '^  openssl-(major|minor):' "$recipe" | tr -d ' \n' > "$SEEN.test"
+              echo "INFO running the main test pipeline"
+              for sp in $(sed -n 's/^  - name: \(ve-[a-z0-9-]*\)$/\1/p' "$recipe"); do echo "INFO running test pipeline for subpackage $sp"; done
+              exit 0 ;;
+          esac
           exit 7
           STUB
           chmod +x "$RUNNER_TEMP/stub2/docker"
           for line in default 4.0; do
-            want='openssl-major:"3"openssl-minor:"6"'; ol=
-            [ "$line" = 4.0 ] && { want='openssl-major:"4"openssl-minor:"0"'; ol=4.0; }
-            rm -f "$RUNNER_TEMP/seen"
-            if [ -n "$ol" ]; then set -- env OPENSSL_LINE="$ol"; else set -- env -u OPENSSL_LINE; fi
-            SEEN="$RUNNER_TEMP/seen" PATH="$RUNNER_TEMP/stub2:$PATH" \
-              "$@" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/r-$line" >/dev/null 2>&1 || true
-            got="$(cat "$RUNNER_TEMP/seen" 2>/dev/null || true)"
-            [ "$got" = "$want" ] || { echo "::error::OPENSSL_LINE=$line: melange build got [$got], expected [$want]"; exit 1; }
-            echo "OPENSSL_LINE=$line: melange build got $got"
+            want='openssl-major:"3"openssl-minor:"6"'; set -- env -u OPENSSL_LINE
+            [ "$line" = 4.0 ] && { want='openssl-major:"4"openssl-minor:"0"'; set -- env OPENSSL_LINE=4.0; }
+            rm -f "$RUNNER_TEMP/seen.build" "$RUNNER_TEMP/seen.test"
+            rc=0; SEEN="$RUNNER_TEMP/seen" PATH="$RUNNER_TEMP/stub2:$PATH" \
+              "$@" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/r-$line" > "$RUNNER_TEMP/r-$line.log" 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line: build.sh exited $rc with a stub docker (check-tests-ran.sh or an output check failed)"; exit 1; }
+            for phase in build test; do
+              got="$(cat "$RUNNER_TEMP/seen.$phase" 2>/dev/null || true)"
+              [ "$got" = "$want" ] || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line: melange $phase got [$got], expected [$want]"; exit 1; }
+            done
+            echo "OPENSSL_LINE=$line: melange build and melange test both got $want; build.sh completed"
           done
 
       - name: Build and test libpq-17 (amd64)

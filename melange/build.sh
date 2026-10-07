@@ -30,10 +30,12 @@ if [ -n "${OPENSSL_LINE+set}" ] && [ -z "$OPENSSL_LINE" ]; then
 fi
 OPENSSL_LINE="${OPENSSL_LINE:-}"
 if [ -n "$OPENSSL_LINE" ]; then
+  # Only the OpenSSL majors the fleet runs (3 and 4), and a minor without leading zeros, so a typo
+  # (04.0, 3.06, 99999.0) fails here with this message instead of later inside apk as an
+  # unresolvable openssl-<line>-dev.
   case "$OPENSSL_LINE" in
-    *[!0-9.]*|.*|*.|*.*.*|*..*) echo "::error::OPENSSL_LINE must be <major>.<minor> (e.g. 4.0), got '$OPENSSL_LINE'"; exit 1 ;;
-    *.*) ;;
-    *) echo "::error::OPENSSL_LINE must be <major>.<minor> (e.g. 4.0), got '$OPENSSL_LINE'"; exit 1 ;;
+    [34].0|[34].[1-9]|[34].[1-9][0-9]) ;;
+    *) echo "::error::OPENSSL_LINE must be <major>.<minor> with major 3 or 4 and no leading zeros (e.g. 4.0, 3.6), got '$OPENSSL_LINE'"; exit 1 ;;
   esac
 fi
 
@@ -58,8 +60,11 @@ trap 'rm -rf "$WORK"; [ "$DONE" = 1 ] || exit 1' EXIT
 # With OPENSSL_LINE, build and test a rendered copy of the recipe whose two vars are replaced, so
 # `melange build`, `melange test` and check-tests-ran.sh all see the same line. (`melange build
 # --vars-file` exists, but `melange test` has no equivalent and the test pipelines read the vars.)
-# Each var line must occur exactly once, and the copy must differ from the recipe in exactly those
-# two lines, or the build stops: a silent no-op would build the default line under the new name.
+# Each var line must occur exactly once, or the build stops: a missing line would silently build
+# the default, and a duplicate would leave the second copy unrendered. sed then replaces those two
+# lines with the same patterns the count used, so the copy differs from the recipe in at most those
+# two lines (none when OPENSSL_LINE equals the defaults). CI's stub check asserts the vars that
+# `melange build` and `melange test` actually receive.
 if [ -n "$OPENSSL_LINE" ]; then
   maj="${OPENSSL_LINE%%.*}"; min="${OPENSSL_LINE#*.}"
   for v in openssl-major openssl-minor; do
@@ -70,15 +75,6 @@ if [ -n "$OPENSSL_LINE" ]; then
   RENDERED="$WORK/recipe/$(basename "$RECIPE")"
   sed -e "s/^  openssl-major: \"[0-9]*\"\$/  openssl-major: \"$maj\"/" \
       -e "s/^  openssl-minor: \"[0-9]*\"\$/  openssl-minor: \"$min\"/" "$RECIPE" > "$RENDERED"
-  grep -qx "  openssl-major: \"$maj\"" "$RENDERED" && grep -qx "  openssl-minor: \"$min\"" "$RENDERED" \
-    || { echo "::error::rendering $(basename "$RECIPE") at OpenSSL $OPENSSL_LINE failed"; exit 1; }
-  # diff exits 1 when the files differ (expected) and 2 or more on trouble, which must not pass as
-  # "no lines changed". grep -c likewise exits 1 for zero matches and 2 on error.
-  rc=0; diff "$RECIPE" "$RENDERED" > "$WORK/render.diff" || rc=$?
-  [ "$rc" -le 1 ] || { echo "::error::diff failed (exit $rc) comparing the rendered recipe"; exit 1; }
-  rc=0; changed="$(grep -c '^>' "$WORK/render.diff")" || rc=$?
-  [ "$rc" -le 1 ] || { echo "::error::grep failed (exit $rc) counting rendered changes"; exit 1; }
-  [ "$changed" -le 2 ] || { echo "::error::rendering changed $changed lines, expected at most 2"; exit 1; }
   RECIPE="$RENDERED"
   echo "=== building at OpenSSL $OPENSSL_LINE (OPENSSL_LINE) instead of the recipe's default vars ==="
 fi
