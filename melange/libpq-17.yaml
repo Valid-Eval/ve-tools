@@ -1,9 +1,10 @@
 # PostgreSQL client library (libpq) built from source against the image's own FIPS OpenSSL core.
 #
 # Why this exists: Wolfi's libpq-17 once sat on a different OpenSSL line (OpenSSL 4 at 17.11-r4) than
-# CPython's _ssl/_hashlib (OpenSSL 3). Two OpenSSL cores in one process cannot both initialise the single Chainguard FIPS
-# provider (fips.so), so every Python service failed to connect ("could not generate nonce").
-# Building libpq here pins it to the same core as the interpreter (now OpenSSL 4.0: every base is 4-only). The fleet invariant check
+# CPython's _ssl/_hashlib (OpenSSL 3). Two OpenSSL cores in one process cannot both initialise the
+# single Chainguard FIPS provider (fips.so), so every Python service failed to connect ("could not
+# generate nonce"). Building libpq here pins it to the same core as the interpreter. The default
+# line is the one the consuming bases run (4.0 as of 2026-10-09). The fleet invariant check
 # (fips-invariant-check) fails the image build if the two ever diverge again.
 #
 # Lives in ve-tools so every image that needs libpq builds the SAME recipe (image-python,
@@ -147,7 +148,7 @@ subpackages:
         - ve-libpq-17
         # libpq.pc requires libssl/libcrypto, and both OpenSSL lines' -dev packages provide
         # pc:libssl/pc:libcrypto. Without this, a fresh `apk add ve-libpq-17-dev` picks
-        # openssl-4.0-dev headers next to a 3.x libpq, and anything compiled afterwards against
+        # the other OpenSSL line's headers next to this line's libpq, and anything compiled afterwards against
         # -lcrypto links the other core.
         - openssl-${{vars.openssl-major}}.${{vars.openssl-minor}}-dev
     test:

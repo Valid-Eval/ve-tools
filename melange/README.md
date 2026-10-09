@@ -4,7 +4,7 @@ Source-built packages shared across the VE image fleet, built with [melange](htt
 
 | Recipe | Why |
 |---|---|
-| `libpq-17.yaml` | Wolfi `libpq-17` moved to OpenSSL 4 (`17.11-r4`), while CPython and Ruby use OpenSSL 3. Two cores in one process cannot both initialise the FIPS provider. This build links the same OpenSSL line as the consuming runtimes (see [OpenSSL line](#openssl-line)) and drops GSSAPI/LDAP (unused in the fleet). |
+| `libpq-17.yaml` | Wolfi `libpq-17` once sat on a different OpenSSL line (4, at `17.11-r4`) than CPython and Ruby (3). Two cores in one process cannot both initialise the FIPS provider. This build links the same OpenSSL line as the consuming runtimes (see [OpenSSL line](#openssl-line)) and drops GSSAPI/LDAP (unused in the fleet). |
 | `libpq-17.yaml` → subpackage `ve-postgresql-17-client` | `pg_dump`, `pg_restore`, `psql` and `pg_isready` from the same source build, linked against `ve-libpq-17`. Wolfi's `postgresql-17-client` loads two OpenSSL cores in one process: `.so.4` via its libpq, and `.so.3` via krb5's `libk5crypto`. Same source build and configure as libpq (no GSSAPI/LDAP, so no krb5 closure). zlib is enabled for the tools because `pg_restore` must read gzip-compressed `pg_dump -Fc` archives; libpq itself does not link it. |
 
 ## How images consume a recipe
@@ -34,7 +34,7 @@ These checks have been seen failing on a known-bad input and passing on the real
 
 | Check | Known-bad input | Result |
 |---|---|---|
-| Header version | build env given `openssl-4.0-dev` with vars at 3.6 | `build.sh` fails before compiling |
+| Header version | build env given the other line's `-dev` package (e.g. `openssl-3.6-dev` with vars at 4.0) | `build.sh` fails before compiling |
 | libpq NEEDED set | a `--with-gssapi` build (`libgssapi_krb5.so.2` appears) | `build.sh` fails in `melange test` |
 | Symbol-version ceiling | proxy input: the same loop pointed at `libssl.so.3` (needs `OPENSSL_3.2.0`+) with ceiling 3.0 (minor branch) or 4.0 (major branch); no libpq built against newer headers has been run | fails; passes at 3.6 |
 | `-dev` headers | the `ve-libpq-17-dev` built before the explicit dependency (fresh install pulled `openssl-4.0-dev`) | `melange test` fails |
