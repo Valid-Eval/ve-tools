@@ -46,7 +46,7 @@
       ]
     },
     {
-      "description": "libpq: stay on PostgreSQL 17, and take patch releases promptly. PostgreSQL patch releases are mostly security fixes, so skip the repo-wide 7-day age gate and weekly schedule. epoch stays 0 on a version bump; only a same-version rebuild bumps it.",
+      "description": "libpq: stay on PostgreSQL 17, and take patch releases promptly. PostgreSQL patch releases are mostly security fixes, so skip the repo-wide 7-day age gate and weekly schedule. Renovate does not touch the recipe's epoch, so it only changes by hand: a version bump keeps whatever epoch the recipe has until someone resets it.",
       "matchDepNames": [
         "postgres/postgres"
       ],

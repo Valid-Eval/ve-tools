@@ -1,10 +1,13 @@
 # PostgreSQL client library (libpq) built from source against the image's own FIPS OpenSSL core.
 #
-# Why this exists: Wolfi's libpq-17 moved to OpenSSL 4 (17.11-r4) while CPython's _ssl/_hashlib use
-# OpenSSL 3. Two OpenSSL cores in one process cannot both initialise the single Chainguard FIPS
-# provider (fips.so), so every Python service failed to connect ("could not generate nonce").
-# Building libpq here pins it to the same core as the interpreter. The fleet invariant check
-# (fips-invariant-check) fails the image build if the two ever diverge again.
+# Why this exists: Wolfi's libpq-17 once sat on a different OpenSSL line (OpenSSL 4 at 17.11-r4) than
+# CPython's _ssl/_hashlib (OpenSSL 3). Two OpenSSL cores in one process cannot both initialise the
+# single Chainguard FIPS provider (fips.so), so every Python service failed to connect ("could not
+# generate nonce"). Building libpq here pins it to the same core as the interpreter. The default
+# line is the one the consuming bases run (4.0 as of 2026-10-09). The fleet invariant check
+# (fips-invariant-check) fails the image build if the two ever diverge again. The recipe stays
+# needed even with every base on OpenSSL 4: it follows each consumer's line (OPENSSL_LINE), and
+# Wolfi's client packages pull in krb5, whose libk5crypto is a second OpenSSL core in the process.
 #
 # Lives in ve-tools so every image that needs libpq builds the SAME recipe (image-python,
 # image-ruby): each image-* CI checks out ve-tools at a pinned tag (`melange-libpq-17/vN`), runs
@@ -36,8 +39,8 @@ vars:
   # epoch with the default; that's safe because nothing is published (each consumer builds into
   # its own per-run, per-key repo). Bump `epoch` when moving the defaults without a PostgreSQL
   # version change.
-  openssl-major: "3"
-  openssl-minor: "6"
+  openssl-major: "4"
+  openssl-minor: "0"
   # renovate: postgres/postgres -- tag, commit and package version move together. Keep pg-tag,
   # pg-commit, `package:` and `version:` contiguous and in this order: Renovate's regex matches the
   # four lines as one block, and silently stops proposing updates if anything is inserted between.
@@ -46,7 +49,7 @@ vars:
 package:
   version: "17.11"
   name: postgresql-17
-  epoch: 0
+  epoch: 1
   description: "Origin package for the PostgreSQL 17 client pieces built here against the image's FIPS OpenSSL ${{vars.openssl-major}} core; ships no files itself, see the subpackages ve-libpq-17, ve-libpq-17-dev and ve-postgresql-17-client"
   copyright:
     - license: PostgreSQL
@@ -147,7 +150,7 @@ subpackages:
         - ve-libpq-17
         # libpq.pc requires libssl/libcrypto, and both OpenSSL lines' -dev packages provide
         # pc:libssl/pc:libcrypto. Without this, a fresh `apk add ve-libpq-17-dev` picks
-        # openssl-4.0-dev headers next to a 3.x libpq, and anything compiled afterwards against
+        # the other OpenSSL line's headers next to this line's libpq, and anything compiled afterwards against
         # -lcrypto links the other core.
         - openssl-${{vars.openssl-major}}.${{vars.openssl-minor}}-dev
     test:

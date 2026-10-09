@@ -8,7 +8,7 @@
 # workspace is mounted at the same path inside and outside the container.
 #
 # Usage: [OPENSSL_LINE=<major>.<minor>] build.sh <recipe.yaml> <amd64|arm64> <out-dir>
-# OPENSSL_LINE builds for a consumer's OpenSSL line (for example 4.0) instead of the recipe's
+# OPENSSL_LINE builds for a consumer's OpenSSL line (for example 3.6) instead of the recipe's
 # default `openssl-major`/`openssl-minor` vars. Each image follows its own base's line, so the
 # consumer derives it from its base and passes it here; the recipe file itself is not edited.
 # Output: <out-dir>/<apk-arch>/{APKINDEX.tar.gz,*.apk} and <out-dir>/melange.rsa.pub
