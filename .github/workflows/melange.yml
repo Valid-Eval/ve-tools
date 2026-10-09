@@ -124,13 +124,21 @@ jobs:
           exit 7
           STUB
           chmod +x "$RUNNER_TEMP/stub2/docker"
-          for line in default 3.6; do
+          # 4.0 is the identity render: OPENSSL_LINE equal to the recipe's defaults must still take the
+          # render path (the log says so) and hand both melange commands the same vars as no override.
+          for line in default 4.0 3.6; do
             want='openssl-major:"4"openssl-minor:"0"'; set -- env -u OPENSSL_LINE
+            [ "$line" = 4.0 ] && set -- env OPENSSL_LINE=4.0
             [ "$line" = 3.6 ] && { want='openssl-major:"3"openssl-minor:"6"'; set -- env OPENSSL_LINE=3.6; }
             rm -f "$RUNNER_TEMP/seen.build" "$RUNNER_TEMP/seen.test"
             rc=0; SEEN="$RUNNER_TEMP/seen" PATH="$RUNNER_TEMP/stub2:$PATH" \
               "$@" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/r-$line" > "$RUNNER_TEMP/r-$line.log" 2>&1 || rc=$?
             [ "$rc" = 0 ] || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line: build.sh exited $rc with a stub docker (check-tests-ran.sh or an output check failed)"; exit 1; }
+            if [ "$line" = default ]; then
+              ! grep -q 'instead of the recipe' "$RUNNER_TEMP/r-$line.log" || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::default build took the OPENSSL_LINE render path"; exit 1; }
+            else
+              grep -q "building at OpenSSL $line (OPENSSL_LINE)" "$RUNNER_TEMP/r-$line.log" || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line did not take the render path"; exit 1; }
+            fi
             for phase in build test; do
               got="$(cat "$RUNNER_TEMP/seen.$phase" 2>/dev/null || true)"
               [ "$got" = "$want" ] || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line: melange $phase got [$got], expected [$want]"; exit 1; }
@@ -154,3 +162,17 @@ jobs:
 
       - name: Build and test libpq-17 at OpenSSL 3.6 (amd64)
         run: OPENSSL_LINE=3.6 melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/melange-out"
+
+  # arm64 is built by the Apple-silicon dev flow and by consumers' arm64 image builds, so CI builds
+  # and tests it too, at the default vars. GitHub-hosted arm runners are free for public repos.
+  build-test-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and test libpq-17 (arm64)
+        run: melange/build.sh melange/libpq-17.yaml arm64 "$RUNNER_TEMP/melange-out"
