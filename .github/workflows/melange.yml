@@ -113,10 +113,12 @@ jobs:
           case "$cmd" in
             keygen) echo fake > "$key.pub"; exit 0 ;;
             build)
+              echo "$recipe" > "$SEEN.build.path"
               grep -E '^  openssl-(major|minor):' "$recipe" | tr -d ' \n' > "$SEEN.build"
               mkdir -p "$out/x86_64" && echo fake > "$out/x86_64/fake.apk" && echo fake > "$out/x86_64/APKINDEX.tar.gz"
               exit 0 ;;
             test)
+              echo "$recipe" > "$SEEN.test.path"
               grep -E '^  openssl-(major|minor):' "$recipe" | tr -d ' \n' > "$SEEN.test"
               for sp in $(sed -n 's/^  - name: \(ve-[a-z0-9-]*\)$/\1/p' "$recipe"); do echo "INFO running test pipeline for subpackage $sp"; done
               exit 0 ;;
@@ -130,16 +132,21 @@ jobs:
             want='openssl-major:"4"openssl-minor:"0"'; set -- env -u OPENSSL_LINE
             [ "$line" = 4.0 ] && set -- env OPENSSL_LINE=4.0
             [ "$line" = 3.6 ] && { want='openssl-major:"3"openssl-minor:"6"'; set -- env OPENSSL_LINE=3.6; }
-            rm -f "$RUNNER_TEMP/seen.build" "$RUNNER_TEMP/seen.test"
+            rm -f "$RUNNER_TEMP"/seen.build* "$RUNNER_TEMP"/seen.test*
             rc=0; SEEN="$RUNNER_TEMP/seen" PATH="$RUNNER_TEMP/stub2:$PATH" \
               "$@" melange/build.sh melange/libpq-17.yaml amd64 "$RUNNER_TEMP/r-$line" > "$RUNNER_TEMP/r-$line.log" 2>&1 || rc=$?
             [ "$rc" = 0 ] || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line: build.sh exited $rc with a stub docker (check-tests-ran.sh or an output check failed)"; exit 1; }
             if [ "$line" = default ]; then
-              ! grep -q 'instead of the recipe' "$RUNNER_TEMP/r-$line.log" || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::default build took the OPENSSL_LINE render path"; exit 1; }
+              ! grep -q "(OPENSSL_LINE)" "$RUNNER_TEMP/r-$line.log" || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::default build took the OPENSSL_LINE render path"; exit 1; }
             else
               grep -q "building at OpenSSL $line (OPENSSL_LINE)" "$RUNNER_TEMP/r-$line.log" || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line did not take the render path"; exit 1; }
             fi
             for phase in build test; do
+              # With OPENSSL_LINE both melange commands get the rendered copy under the work dir's
+              # recipe/; without it, the repo's recipe itself.
+              path="$(cat "$RUNNER_TEMP/seen.$phase.path" 2>/dev/null || true)"
+              if [ "$line" = default ]; then wantpath="*/melange/libpq-17.yaml"; else wantpath="$RUNNER_TEMP/melange-ws.*/recipe/libpq-17.yaml"; fi
+              case "$path" in $wantpath) ;; *) cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line: melange $phase got recipe [$path], expected [$wantpath]"; exit 1 ;; esac
               got="$(cat "$RUNNER_TEMP/seen.$phase" 2>/dev/null || true)"
               [ "$got" = "$want" ] || { cat "$RUNNER_TEMP/r-$line.log"; echo "::error::OPENSSL_LINE=$line: melange $phase got [$got], expected [$want]"; exit 1; }
             done
