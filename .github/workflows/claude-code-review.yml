@@ -38,6 +38,13 @@ jobs:
           additional_permissions: |
             actions: read
 
+          # Step 4 of the prompt posts with `gh api -f` fields instead of a JSON heredoc. Observed
+          # (INF-401): ve-app's CI run installed Claude Code 2.1.296, and in local tests on that version a heredoc
+          # carrying a JSON body was denied ("Contains brace with quote character (expansion obfuscation)")
+          # while `-f` fields were not. The cost: findings go in the review body, with no inline comments
+          # and no review threads. A bare single quote in the body is denied the same way, so the prompt
+          # tells the model to write each one as '\'' (verified locally). A line starting with # inside the
+          # body is denied too ("Newline followed by # inside a quoted argument"), hence the no-heading rule.
           prompt: |
             REPO: ${{ github.repository }}
             PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -64,7 +71,7 @@ jobs:
 
             ## 1. Get the diff
 
-            The full PR diff. Always fetch it, because it is the reference for comment line numbers:
+            The full PR diff. Always fetch it, because it is the reference for line numbers:
 
             ```
             gh pr diff ${{ github.event.pull_request.number }}
@@ -156,55 +163,66 @@ jobs:
 
             ## 4. Post exactly one review
 
-            Collect every finding first. Then submit one review by feeding JSON to `gh api` on stdin from a
-            heredoc, exactly as shown. The command must begin with `gh api`: `printf … | gh api`,
-            `cat … | gh api` and writing the JSON to a file are not available, and the review would not
-            post.
+            Collect every finding first. Then submit one review with `-f` fields, exactly as shown. The
+            command must begin with `gh api`. Do not use a heredoc, `--input`, `printf … | gh api`,
+            `cat … | gh api` or a file. A heredoc carrying a JSON body is denied by Claude Code's Bash
+            safety check ("Contains brace with quote character"), and the review would not post.
 
             ```
-            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews --input - <<'JSON'
-            {
-              "commit_id": "${{ github.event.pull_request.head.sha }}",
-              "event": "COMMENT",
-              "body": "Reviewed <range>: summary and any PR-level concerns.\n\n<!-- claude-review run=${{ github.run_id }}.${{ github.run_attempt }} -->",
-              "comments": [
-                {
-                  "path": "path/to/file",
-                  "line": 42,
-                  "side": "RIGHT",
-                  "body": "**[Critical]** What is wrong.\n\nEvidence.\n\n**Suggested fix:** concrete change."
-                }
-              ]
-            }
-            JSON
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f commit_id=${{ github.event.pull_request.head.sha }} -f event=COMMENT -f body='Reviewed <range>: summary and any PR-level concerns.
+
+            **[Critical]** path/to/file:42 - What is wrong.
+
+            Evidence.
+
+            **Suggested fix:** concrete change.
+
+            <!-- claude-review run=${{ github.run_id }}.${{ github.run_attempt }} -->'
             ```
 
-            - `event` is always `"COMMENT"`. Never use `APPROVE` or `REQUEST_CHANGES`, and never leave it
+            - `body` is one single-quoted shell string, and it may span lines. Write every apostrophe or
+              single quote inside it as `'\''` (close the quote, a backslash-escaped quote, reopen), for
+              example `doesn'\''t`. A bare `'` ends the string early and the command is denied or fails.
+              Write nothing else escaped.
+            - No line of `body` may start with `#`. Claude Code denies a newline followed by `#` inside a
+              quoted argument ("can hide arguments from path validation"). Do not use markdown headings;
+              use bold text (`**Name**`) instead. A `#` in the middle of a line is fine.
+            - Every finding goes in `body`, written as `**[Severity]** path:line - finding`, with the
+              evidence and suggested fix under it. Inline comments are not available with this form, so
+              do not try to post them.
+            - `event` is always `COMMENT`. Never use `APPROVE` or `REQUEST_CHANGES`, and never leave it
               out: without it, the review stays pending and no one else can see it.
             - `commit_id` is always HEAD_SHA, as shown.
-            - `body` starts with `Reviewed <range>:`. `<range>` is `<BEFORE_SHA:7>..<HEAD_SHA:7> (this push)`
+            - Unless one of the two cases below applies, `body` starts with `Reviewed <range>:`. `<range>` is `<BEFORE_SHA:7>..<HEAD_SHA:7> (this push)`
               or `full PR diff at <HEAD_SHA:7>`. `body` always ends with the `<!-- claude-review run=… -->`
               line, exactly as shown.
-            - `line` is a line number in the new version of the file (`"side": "RIGHT"`). It must fall
-              inside a hunk of the full PR diff, and you read it from the hunk headers. A finding you cannot
-              anchor that way (deleted code, an unchanged file, a PR-wide concern) goes in `body` as
-              `path:line — finding`.
-            - The JSON must be valid: escape `"` and write newlines as `\n`. No line may consist only of
-              `JSON` except the last one.
+            - `line` in `path:line` is a line number in the new version of the file, read from the hunk
+              headers of the full PR diff.
 
-            If the POST returns 422: the endpoint is atomic, so one bad `line` rejects the whole review,
-            body included. Retry once, immediately, with `"comments": []` and every finding moved into
-            `body`, each prefixed with its `path:line`. If the POST fails any other way, retry the same
-            command once. After one review succeeds, never submit another.
+            If the POST fails, first check that no review for HEAD_SHA was posted (the error may have come
+            after GitHub accepted it):
+            ```
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews --jq '.[] | select(.commit_id == "${{ github.event.pull_request.head.sha }}") | .id'
+            ```
+            If that prints nothing, retry once. If the error was about quoting or a denied command, rewrite
+            `body` with every `'` as `'\''`; if it was about size, keep only the most important findings.
+            After one review succeeds, never submit another. Never post a test, probe or placeholder review.
 
-            If you reviewed the diff and found nothing new, you must still submit the review. Leave out
-            `comments`, and start `body` with exactly `No new issues found`, as in
+            If you reviewed the diff and found nothing new, you must still submit the review. Start
+            `body` with exactly `No new issues found`, as in
             `No new issues found in <range>.` You may list earlier findings that still apply. Keep the
             marker line at the end.
 
             If you have no diff (the diff command failed, returned nothing, or you could not tell what to
-            review), never post an all-clear. Submit this instead and stop:
-            `"body": "Review could not determine the changed range — no review was performed. <what failed>\n\n<!-- claude-review run=${{ github.run_id }}.${{ github.run_attempt }} -->"`
+            review), never post an all-clear. Submit exactly this instead and stop, with `<what failed>`
+            filled in (the same apostrophe rule applies to it). The sentence "no review was performed" must
+            stay word for word:
+
+            ```
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f commit_id=${{ github.event.pull_request.head.sha }} -f event=COMMENT -f body='Review could not determine the changed range — no review was performed. <what failed>
+
+            <!-- claude-review run=${{ github.run_id }}.${{ github.run_attempt }} -->'
+            ```
 
             A run that posts nothing looks like a reviewer that never started. An all-clear over a diff you
             did not read is worse than nothing.
@@ -231,14 +249,17 @@ jobs:
         run: |
           set -euo pipefail
           # Must match the Claude reviewer specifically — a human review for the same commit
-          # is not evidence that the automated reviewer ran. The match is a login containing "claude"
-          # plus the head commit: a regression guard, not an attestation. The prompt's fallback review
+          # is not evidence that the automated reviewer ran. The match is the exact login of the
+          # Claude GitHub App, claude[bot], plus the head commit: a regression guard, not an
+          # attestation. A substring match would also count any other account whose login contains
+          # "claude". A user account cannot hold this login: GitHub usernames allow only letters,
+          # digits and hyphens. The prompt's fallback review
           # ("no review was performed") is not counted.
           # `gh api --paginate` applies --jq to EACH page, so this emits one count per page.
           # Sum them; a bare $(...) would hold a multi-line string and break the -eq test on any
           # PR with more than one page of reviews.
           COUNT=$(gh api --paginate "repos/${GH_REPO}/pulls/${PR_NUMBER}/reviews" \
-            --jq "[.[] | select(.commit_id == \"${HEAD_SHA}\" and ((.user.login // \"\") | test(\"claude\"; \"i\")) and ((.body // \"\") | contains(\"no review was performed\") | not))] | length" \
+            --jq "[.[] | select(.commit_id == \"${HEAD_SHA}\" and (.user.login // \"\") == \"claude[bot]\" and ((.body // \"\") | contains(\"no review was performed\") | not))] | length" \
             | awk '{ total += $1 } END { print total + 0 }') || {
             echo "::error title=Review lookup failed::Could not list the reviews for ${HEAD_SHA} (the GitHub API call failed), so this check cannot tell whether a review was posted. Re-run the job; if it persists, review manually."
             exit 1
