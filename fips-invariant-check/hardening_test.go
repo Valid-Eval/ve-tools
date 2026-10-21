@@ -910,6 +910,20 @@ func TestAnalyzeStrippedAwsLcNestedSources(t *testing.T) {
 	}
 }
 
+// A stripped AWS-LC build that keeps only fipsmodule areas outside evp/rand/sha/bn/ec, or only
+// hyphenated file names, must still be found: 22 of the 57 crypto/fipsmodule/ paths in aws-cli-2
+// 2.38.4-r0's awscrt are like these.
+func TestAnalyzeStrippedAwsLcOtherAreas(t *testing.T) {
+	_, withoutCrypto := goFixtures(t)
+	marked := copyWith(t, withoutCrypto, func(d []byte) []byte {
+		return append(d, []byte("\x00AWS-LC\x00/src/aws-lc/crypto/fipsmodule/rsa/rsa_impl.c\x00/src/aws-lc/crypto/fipsmodule/ec/p256-nistz.c\x00")...)
+	})
+	r, err := analyze(marked, "/usr/lib/libx.so")
+	if err != nil || r == nil || !r.HasSource {
+		t.Fatalf("rsa/ and hyphenated fipsmodule paths with an AWS-LC marker must set HasSource, got %v %+v", err, r)
+	}
+}
+
 // The scanner never skips files it was not asked to: a missing self path (os.Executable failed)
 // skips nothing, and a given one skips only that file.
 func TestScanSelfSkip(t *testing.T) {
