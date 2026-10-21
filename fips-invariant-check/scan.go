@@ -66,8 +66,10 @@ var cryptoLibMarker = regexp.MustCompile(`OpenSSL [0-9]+\.[0-9]+\.[0-9]+|BoringS
 
 // cryptoSourceMarker is what a compiled-in copy of the library leaves behind even when stripped:
 // its own source paths in assert/error strings. Together with cryptoLibMarker it identifies an
-// embedded copy in a binary whose symbols are gone.
-var cryptoSourceMarker = regexp.MustCompile(`crypto/(evp|rand|fipsmodule|sha|bn|ec)/[a-z0-9_]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
+// embedded copy in a binary whose symbols are gone. AWS-LC and BoringSSL keep these sources one
+// level down, in crypto/fipsmodule/<area>/ (aws-lc/crypto/fipsmodule/bn/add.c); a stripped awscrt
+// (aws-cli-2 2.38.4-r0's _awscrt.abi3.so) carries only those, so the optional fipsmodule/ is needed.
+var cryptoSourceMarker = regexp.MustCompile(`crypto/(fipsmodule/)?(evp|rand|fipsmodule|sha|bn|ec)/[a-z0-9_]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
 
 // The two marker patterns run over every byte of every ELF file. Go's regexp cannot skip ahead on
 // an alternation whose branches start differently, so it steps its NFA through each byte (about

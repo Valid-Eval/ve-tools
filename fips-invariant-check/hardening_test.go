@@ -891,6 +891,25 @@ func TestAnalyzeStrippedAwsLcMarker(t *testing.T) {
 	}
 }
 
+// Current AWS-LC keeps its FIPS sources in crypto/fipsmodule/<area>/, and a stripped build carries
+// only those paths: aws-cli-2 2.38.4-r0's _awscrt.abi3.so (Wolfi, 2026-10-21) has no crypto symbols
+// left, "AWS-LC" text, and paths like these, none directly under crypto/fipsmodule/. It must still
+// be found as a stripped embedded copy (v0.5.2 passed it).
+func TestAnalyzeStrippedAwsLcNestedSources(t *testing.T) {
+	_, withoutCrypto := goFixtures(t)
+	marked := copyWith(t, withoutCrypto, func(d []byte) []byte {
+		return append(d, []byte("\x00AWS-LC\x00/work/build/source/crt/aws-lc/crypto/fipsmodule/bn/add.c\x00/work/build/source/crt/aws-lc/crypto/fipsmodule/ec/ec_key.c\x00")...)
+	})
+	r, err := analyze(marked, "/opt/chainguard/aws-cli-2/lib/python3.14/site-packages/_awscrt.abi3.so")
+	if err != nil || r == nil || !r.HasSource || len(r.NeededCores) != 0 {
+		t.Fatalf("nested aws-lc source paths with an AWS-LC marker must set HasSource, got %v %+v", err, r)
+	}
+	nonGo := &fileReport{Path: r.Path, Markers: r.Markers, HasSource: true}
+	if got := embeddedReason(nonGo); !strings.Contains(got, "stripped embedded copy") {
+		t.Fatalf("a stripped awscrt must fail as an embedded copy, got %q", got)
+	}
+}
+
 // The scanner never skips files it was not asked to: a missing self path (os.Executable failed)
 // skips nothing, and a given one skips only that file.
 func TestScanSelfSkip(t *testing.T) {
