@@ -18,7 +18,7 @@ import (
 // also change the reference they are checked against.
 var (
 	oracleLibMarker    = regexp.MustCompile(`OpenSSL [0-9]+\.[0-9]+\.[0-9]+|BoringSSL|AWS-LC|LibreSSL [0-9]|aws-lc/crypto/fipsmodule`)
-	oracleSourceMarker = regexp.MustCompile(`crypto/(evp|rand|fipsmodule|sha|bn|ec)/[a-z0-9_-]+\.(c|cc)|crypto/fipsmodule/[a-z0-9_]+/[a-z0-9_-]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
+	oracleSourceMarker = regexp.MustCompile(`crypto/(evp|rand|sha|bn|ec)/[a-z0-9_-]+\.(c|cc)|crypto/fipsmodule/([a-z0-9_]+/)?[a-z0-9_-]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
 )
 
 // oracleScanBytes is scanBytes as of v0.5.1, one alternation per pattern.

@@ -66,12 +66,11 @@ var cryptoLibMarker = regexp.MustCompile(`OpenSSL [0-9]+\.[0-9]+\.[0-9]+|BoringS
 
 // cryptoSourceMarker is what a compiled-in copy of the library leaves behind even when stripped:
 // its own source paths in assert/error strings. Together with cryptoLibMarker it identifies an
-// embedded copy in a binary whose symbols are gone. AWS-LC and BoringSSL keep their FIPS sources
-// one level down, in crypto/fipsmodule/<area>/ (aws-lc/crypto/fipsmodule/bn/add.c), and a stripped
-// awscrt (aws-cli-2 2.38.4-r0's _awscrt.abi3.so) carries only those. Every directory there is the
-// FIPS module's own code, so any area counts (rsa, cipher, hmac, ecdsa, kem, ...), and file names
-// may be hyphenated (ec/p256-nistz.c). The library marker is still required alongside.
-var cryptoSourceMarker = regexp.MustCompile(`crypto/(evp|rand|fipsmodule|sha|bn|ec)/[a-z0-9_-]+\.(c|cc)|crypto/fipsmodule/[a-z0-9_]+/[a-z0-9_-]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
+// embedded copy in a binary whose symbols are gone. crypto/fipsmodule/ is the FIPS module's own
+// code: files directly in it (bcm.c) or in any area below it (aws-lc/crypto/fipsmodule/bn/add.c,
+// rsa/, cipher/, hmac/, ...), which is all a stripped awscrt (aws-cli-2 2.38.4-r0's _awscrt.abi3.so)
+// carries. File names may be hyphenated (ec/p256-nistz.c). The library marker is still required.
+var cryptoSourceMarker = regexp.MustCompile(`crypto/(evp|rand|sha|bn|ec)/[a-z0-9_-]+\.(c|cc)|crypto/fipsmodule/([a-z0-9_]+/)?[a-z0-9_-]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
 
 // The two marker patterns run over every byte of every ELF file. Go's regexp cannot skip ahead on
 // an alternation whose branches start differently, so it steps its NFA through each byte (about
