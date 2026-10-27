@@ -86,3 +86,20 @@ reviews:
       - The scope control is to be enforced by the both-ways tests in VEP-2173's scope
     compliance_ref: https://github.com/Valid-Eval/ve-compliance/pull/27
     jira_ref: VEP-2173
+
+  - name: renovate-health-sweep-stale-threshold-review
+    description: >-
+      Check whether the 7-day STALE threshold in bin/renovate-health-sweep still makes sense.
+      It was chosen as a starting point, not measured (NOTE 9 in the script): GitHub only bumps
+      the dashboard issue's updatedAt when Renovate edits it, so a quiet healthy repo may read
+      STALE. This is an operational check, not a compliance record; the reminder uses this file
+      because it is the repo's scheduled-review mechanism.
+    due: "2026-11-07"
+    remind_days_before: 7
+    steps: |-
+      1. Run bin/renovate-health-sweep and note which repos report STALE
+      2. For each, check whether Renovate is actually running there or the dashboard is just quiet
+      3. If healthy repos read STALE, raise STALE_DAYS in the script and update NOTE 9; otherwise record that 7 days held
+      4. Set 'due' to the next check, or remove this entry if the threshold is settled
+    compliance_ref: https://github.com/Valid-Eval/ve-tools/pull/20
+    jira_ref: INF-346
