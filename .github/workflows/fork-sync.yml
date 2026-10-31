@@ -8,16 +8,24 @@
 #   1. checks the fork's parent and upstream's default branch still match the matrix entry
 #      (an upstream default-branch rename, e.g. activegraph 12 -> 13, fails the run);
 #   2. fails if the fork's branch has any commit upstream does not (anything but compare
-#      status "ahead" with behind_by 0). merge-upstream has no fast-forward-only mode, so this
-#      pre-check plus the equality check in step 4 are what keep merge commits out;
-#   3. calls the merge-upstream API (skipped on pull_request: dry run);
+#      status "ahead" with behind_by 0);
+#   3. moves the fork's branch to exactly the upstream SHA checked in step 2 with
+#      PATCH git/refs force=false, which GitHub only accepts as a fast-forward (skipped on
+#      pull_request: dry run). merge-upstream is not used: it re-reads upstream and can
+#      create a merge commit if upstream force-pushes between steps 2 and 3;
 #   4. re-reads both heads and fails unless they are equal.
 #
-# Known limitation: the CI bot App has no `workflows` permission, so GitHub rejects a sync
-# whose upstream range touches .github/workflows/*. The run goes red; sync that fork by hand
-# with the "Sync fork" button on its GitHub page, then re-run this workflow to confirm.
+# Known limitation: the CI bot App has no `workflows` permission, so GitHub rejects a ref
+# update whose upstream range touches .github/workflows/*. Upstream changes its workflows
+# often (neo4j-ruby-driver: 2026-09-21, 10-26, 10-27), so expect this regularly. The run goes
+# red; sync that fork by hand with the "Sync fork" button on its GitHub page, then re-run.
 #
-# A failed scheduled or dispatched run opens (or comments on) one ve-tools issue titled
+# Recovery if a fork's branch ever carries its own commit (step 2 fails every run): an org
+# admin resets it to upstream, e.g. the fork's "Sync fork" > "Discard commits".
+#
+# Forks not listed in the matrix are never synced.
+#
+# A failed or cancelled scheduled or dispatched run opens (or comments on) one ve-tools issue titled
 # "Fork upstream sync failing", so a red run does not depend on GitHub's notification to
 # whoever last edited the cron line.
 #
@@ -65,7 +73,8 @@ jobs:
           private-key: ${{ secrets.CI_BOT_APP_PRIVATE_KEY }}
           owner: Valid-Eval
           repositories: ${{ matrix.fork }}
-          permission-contents: write
+          # Read-only for the pull_request dry run; write only when the job will move the ref.
+          permission-contents: ${{ github.event_name == 'pull_request' && 'read' || 'write' }}
 
       - name: Sync ${{ matrix.fork }} from ${{ matrix.upstream }}
         env:
@@ -115,14 +124,14 @@ jobs:
               exit 0
             fi
 
-            if ! merge_type=$(gh api -X POST "repos/${FORK}/merge-upstream" -f branch="$BRANCH" \
-                                --jq .merge_type 2>"$RUNNER_TEMP/merge.err"); then
-              fail "merge-upstream failed: $(cat "$RUNNER_TEMP/merge.err"). If the upstream range touches .github/workflows/*, the App lacks the workflows permission: sync by hand with the fork's Sync fork button, then re-run"
+            # force=false: GitHub rejects anything that is not a fast-forward, and the
+            # target is the exact SHA verified above, not whatever upstream holds now.
+            if ! moved=$(gh api -X PATCH "repos/${FORK}/git/refs/heads/${BRANCH}" \
+                           -f sha="$upstream_sha" -F force=false \
+                           --jq .object.sha 2>"$RUNNER_TEMP/update.err"); then
+              fail "ref update failed: $(cat "$RUNNER_TEMP/update.err"). If the upstream range touches .github/workflows/*, the App lacks the workflows permission: sync by hand with the fork's Sync fork button, then re-run"
             fi
-            case "$merge_type" in
-              fast-forward|none) ;;
-              *) fail "merge-upstream reported merge_type=${merge_type}; expected fast-forward" ;;
-            esac
+            [ "$moved" = "$upstream_sha" ] || fail "ref update returned ${moved}, expected ${upstream_sha}"
           fi
 
           # Independent check: read both heads again and require equality.
@@ -135,7 +144,9 @@ jobs:
   alert:
     name: alert on failure
     needs: sync
-    if: failure() && github.event_name != 'pull_request'
+    if: >-
+      always() && github.event_name != 'pull_request' &&
+      (needs.sync.result == 'failure' || needs.sync.result == 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
