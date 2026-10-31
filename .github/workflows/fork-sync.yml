@@ -1,0 +1,118 @@
+# Fork Upstream Sync
+#
+# Keeps Valid-Eval's public forks of upstream open-source projects identical to upstream
+# on their default branch. Contribution work happens on topic branches in the forks, never
+# on the synced branch, so the synced branch must only ever fast-forward.
+#
+# Per fork, each run:
+#   1. checks the fork's parent and upstream's default branch still match the matrix entry
+#      (an upstream default-branch rename, e.g. activegraph 12 -> 13, fails the run);
+#   2. fails if the fork's branch has any commit upstream does not (behind_by > 0), instead
+#      of letting merge-upstream create a merge commit;
+#   3. calls the merge-upstream API (skipped on pull_request: dry run);
+#   4. re-reads both heads and fails unless they are equal.
+#
+# Known limitation: the CI bot App has no `workflows` permission, so GitHub rejects a sync
+# whose upstream range touches .github/workflows/*. The run goes red; sync that fork by hand
+# with the "Sync fork" button on its GitHub page, then re-run this workflow to confirm.
+#
+# Required org variable:  CI_BOT_APP_CLIENT_ID
+# Required org secret:    CI_BOT_APP_PRIVATE_KEY
+# The `valid-eval-ci-bot` App installation must include every fork in the matrix.
+
+name: Fork Upstream Sync
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/fork-sync.yml
+
+permissions: {}
+
+concurrency:
+  group: fork-sync-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: sync ${{ matrix.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - fork: activegraph
+            upstream: neo4jrb/activegraph
+            branch: "12"
+          - fork: neo4j-ruby-driver
+            upstream: neo4jrb/neo4j-ruby-driver
+            branch: main
+    steps:
+      - name: Generate CI bot installation token
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_BOT_APP_PRIVATE_KEY }}
+          owner: Valid-Eval
+          repositories: ${{ matrix.fork }}
+
+      - name: Sync ${{ matrix.fork }} from ${{ matrix.upstream }}
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          FORK: Valid-Eval/${{ matrix.fork }}
+          UPSTREAM: ${{ matrix.upstream }}
+          BRANCH: ${{ matrix.branch }}
+          DRY_RUN: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+
+          fail() { echo "::error title=${FORK}::$1"; echo "FAIL ${FORK}: $1" >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+
+          parent=$(gh api "repos/${FORK}" --jq '.parent.full_name // ""')
+          [ "$parent" = "$UPSTREAM" ] || fail "fork parent is '${parent}', expected ${UPSTREAM}"
+
+          upstream_default=$(gh api "repos/${UPSTREAM}" --jq .default_branch)
+          [ "$upstream_default" = "$BRANCH" ] \
+            || fail "upstream default branch is now '${upstream_default}', matrix says '${BRANCH}'; update this workflow"
+
+          upstream_sha=$(gh api "repos/${UPSTREAM}/commits/${BRANCH}" --jq .sha)
+          fork_sha=$(gh api "repos/${FORK}/commits/${BRANCH}" --jq .sha)
+          echo "upstream ${UPSTREAM}@${BRANCH} = ${upstream_sha}"
+          echo "fork     ${FORK}@${BRANCH} = ${fork_sha}"
+
+          if [ "$fork_sha" != "$upstream_sha" ]; then
+            # Compare in the upstream repo: base = fork head, head = upstream head.
+            # Only "ahead" with behind_by == 0 is a fast-forward. Anything else
+            # (diverged, behind, or an unresolvable fork-only SHA) means the fork's
+            # branch carries commits upstream does not.
+            cmp=$(gh api "repos/${UPSTREAM}/compare/${fork_sha}...${upstream_sha}" \
+                    --jq '"\(.status) \(.behind_by)"') \
+              || fail "cannot compare fork head ${fork_sha} against upstream; the fork branch likely has its own commits"
+            read -r status behind <<< "$cmp"
+            [ "$status" = "ahead" ] && [ "$behind" = "0" ] \
+              || fail "fork ${BRANCH} is not a fast-forward of upstream (status=${status}, behind_by=${behind}); it must carry no commits of its own"
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "DRY RUN ${FORK}: would fast-forward ${fork_sha} -> ${upstream_sha}" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            merge_type=$(gh api -X POST "repos/${FORK}/merge-upstream" -f branch="$BRANCH" --jq .merge_type) \
+              || fail "merge-upstream was rejected (if the upstream range touches .github/workflows, sync by hand with the Sync fork button)"
+            case "$merge_type" in
+              fast-forward|none) ;;
+              *) fail "merge-upstream reported merge_type=${merge_type}; expected fast-forward" ;;
+            esac
+          fi
+
+          # Independent check: read both heads again and require equality.
+          upstream_after=$(gh api "repos/${UPSTREAM}/commits/${BRANCH}" --jq .sha)
+          fork_after=$(gh api "repos/${FORK}/commits/${BRANCH}" --jq .sha)
+          [ "$fork_after" = "$upstream_after" ] \
+            || fail "after sync, fork head ${fork_after} != upstream head ${upstream_after}"
+          echo "OK ${FORK}@${BRANCH} = ${fork_after} (upstream ${upstream_after})" >> "$GITHUB_STEP_SUMMARY"
