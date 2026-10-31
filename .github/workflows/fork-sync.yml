@@ -7,13 +7,18 @@
 # Per fork, each run:
 #   1. checks the fork's parent and upstream's default branch still match the matrix entry
 #      (an upstream default-branch rename, e.g. activegraph 12 -> 13, fails the run);
-#   2. fails if the fork's branch has any commit upstream does not (anything but compare
-#      status "ahead" with behind_by 0);
+#   2. fails unless upstream's head is a fast-forward of the fork's (compare status
+#      "ahead" with behind_by 0). Otherwise the fork branch has its own commits, or
+#      upstream rewrote its history;
 #   3. moves the fork's branch to exactly the upstream SHA checked in step 2 with
-#      PATCH git/refs force=false, which GitHub only accepts as a fast-forward (skipped on
-#      pull_request: dry run). merge-upstream is not used: it re-reads upstream and can
-#      create a merge commit if upstream force-pushes between steps 2 and 3;
-#   4. re-reads both heads and fails unless they are equal.
+#      PATCH git/refs force=false, which GitHub only accepts as a fast-forward.
+#      merge-upstream is not used: it re-reads upstream and can create a merge commit if
+#      upstream force-pushes between steps 2 and 3;
+#   4. re-reads the fork's head and fails unless it is the SHA from step 2. (Upstream may
+#      have moved on since; the next run picks that up, so this is not a false red.)
+# On pull_request it is a dry run with a read-only token: steps 1 and 2 only, plus step 4
+# when the heads are already equal. Every API failure ends in an ::error annotation and a
+# FAIL line in the step summary.
 #
 # Known limitation: the CI bot App has no `workflows` permission, so GitHub rejects a ref
 # update whose upstream range touches .github/workflows/*. Upstream changes its workflows
@@ -46,7 +51,8 @@ on:
 permissions: {}
 
 concurrency:
-  group: fork-sync-${{ github.event_name }}
+  # One group for schedule and dispatch, so the alert job never runs twice at once.
+  group: fork-sync-${{ github.event_name == 'pull_request' && 'pr' || 'sync' }}
   cancel-in-progress: false
 
 jobs:
@@ -87,40 +93,45 @@ jobs:
           set -euo pipefail
 
           fail() { echo "::error title=${FORK}::$1"; echo "FAIL ${FORK}: $1" >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+          # Every read goes through api() and is followed by `|| fail`, so an API error is
+          # reported with gh's own message (HTTP status included), never a bare set -e exit.
+          # fail() runs in the main shell, not inside $(...), so its output reaches the log.
+          api() { gh api "$@" 2>"$RUNNER_TEMP/api.err"; }
+          api_err() { tr '\n' ' ' < "$RUNNER_TEMP/api.err"; }
           # Branch head by branch name (not commits/<ref>, which also matches tags and SHAs).
-          head_of() { gh api "repos/$1/branches/${BRANCH}" --jq .commit.sha; }
+          head_of() { api "repos/$1/branches/${BRANCH}" --jq .commit.sha; }
 
-          parent=$(gh api "repos/${FORK}" --jq '.parent.full_name // ""')
+          parent=$(api "repos/${FORK}" --jq '.parent.full_name // ""') \
+            || fail "reading ${FORK} failed: $(api_err)"
           [ "$parent" = "$UPSTREAM" ] || fail "fork parent is '${parent}', expected ${UPSTREAM}"
 
-          upstream_default=$(gh api "repos/${UPSTREAM}" --jq .default_branch)
+          upstream_default=$(api "repos/${UPSTREAM}" --jq .default_branch) \
+            || fail "reading ${UPSTREAM} failed: $(api_err)"
           [ "$upstream_default" = "$BRANCH" ] \
             || fail "upstream default branch is now '${upstream_default}', matrix says '${BRANCH}'; update this workflow"
 
-          upstream_sha=$(head_of "$UPSTREAM")
-          fork_sha=$(head_of "$FORK")
+          upstream_sha=$(head_of "$UPSTREAM") || fail "reading ${UPSTREAM} branch ${BRANCH} failed: $(api_err)"
+          fork_sha=$(head_of "$FORK") || fail "reading ${FORK} branch ${BRANCH} failed: $(api_err)"
           echo "upstream ${UPSTREAM}@${BRANCH} = ${upstream_sha}"
           echo "fork     ${FORK}@${BRANCH} = ${fork_sha}"
 
           if [ "$fork_sha" != "$upstream_sha" ]; then
             # Compare in the upstream repo: base = fork head, head = upstream head.
-            # Only "ahead" with behind_by == 0 is a fast-forward. Anything else
-            # (diverged, behind, or an unresolvable fork-only SHA) means the fork's
-            # branch carries commits upstream does not.
+            # Only "ahead" with behind_by == 0 is a fast-forward.
             if ! cmp=$(gh api "repos/${UPSTREAM}/compare/${fork_sha}...${upstream_sha}" \
                          --jq '"\(.status) \(.behind_by)"' 2>"$RUNNER_TEMP/cmp.err"); then
-              err=$(cat "$RUNNER_TEMP/cmp.err")
+              err=$(tr '\n' ' ' < "$RUNNER_TEMP/cmp.err")
               case "$err" in
-                *"(HTTP 404)"*) fail "upstream cannot resolve fork head ${fork_sha} against its history (${err}); the fork branch likely has its own commits" ;;
+                *"(HTTP 404)"*) fail "upstream cannot relate fork head ${fork_sha} to its history (${err}): the fork branch has its own commits, or upstream rewrote history" ;;
                 *) fail "compare API call failed: ${err}" ;;
               esac
             fi
             read -r status behind <<< "$cmp"
             [ "$status" = "ahead" ] && [ "$behind" = "0" ] \
-              || fail "fork ${BRANCH} is not a fast-forward of upstream (status=${status}, behind_by=${behind}); it must carry no commits of its own"
+              || fail "upstream ${BRANCH} is not a fast-forward of the fork's (status=${status}, behind_by=${behind}): the fork branch has its own commits, or upstream rewrote history"
 
             if [ "$DRY_RUN" = "true" ]; then
-              echo "DRY RUN ${FORK}: would fast-forward ${fork_sha} -> ${upstream_sha}" >> "$GITHUB_STEP_SUMMARY"
+              echo "DRY RUN ${FORK}: would fast-forward ${fork_sha} to ${upstream_sha}" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
 
@@ -129,17 +140,20 @@ jobs:
             if ! moved=$(gh api -X PATCH "repos/${FORK}/git/refs/heads/${BRANCH}" \
                            -f sha="$upstream_sha" -F force=false \
                            --jq .object.sha 2>"$RUNNER_TEMP/update.err"); then
-              fail "ref update failed: $(cat "$RUNNER_TEMP/update.err"). If the upstream range touches .github/workflows/*, the App lacks the workflows permission: sync by hand with the fork's Sync fork button, then re-run"
+              err=$(tr '\n' ' ' < "$RUNNER_TEMP/update.err")
+              case "$err" in
+                *[Ww]orkflow*) fail "ref update refused (${err}): the upstream range changes .github/workflows/* and the App lacks the workflows permission. Sync by hand with the fork's Sync fork button, then re-run" ;;
+                *) fail "ref update failed: ${err}" ;;
+              esac
             fi
             [ "$moved" = "$upstream_sha" ] || fail "ref update returned ${moved}, expected ${upstream_sha}"
           fi
 
-          # Independent check: read both heads again and require equality.
-          upstream_after=$(head_of "$UPSTREAM")
-          fork_after=$(head_of "$FORK")
-          [ "$fork_after" = "$upstream_after" ] \
-            || fail "after sync, fork head ${fork_after} != upstream head ${upstream_after}"
-          echo "OK ${FORK}@${BRANCH} = ${fork_after} (upstream ${upstream_after})" >> "$GITHUB_STEP_SUMMARY"
+          # Independent check: re-read the fork's head; it must be the verified upstream SHA.
+          fork_after=$(head_of "$FORK") || fail "re-reading ${FORK} branch ${BRANCH} failed: $(api_err)"
+          [ "$fork_after" = "$upstream_sha" ] \
+            || fail "after sync, fork head ${fork_after} != verified upstream SHA ${upstream_sha}"
+          echo "OK ${FORK}@${BRANCH} = ${fork_after}" >> "$GITHUB_STEP_SUMMARY"
 
   alert:
     name: alert on failure
@@ -160,7 +174,8 @@ jobs:
         run: |
           set -euo pipefail
           title="Fork upstream sync failing"
-          num=$(gh issue list -R "$REPO" --state open --search "\"${title}\" in:title" --json number,title \
+          # List (not --search, whose index lags) and match the exact title.
+          num=$(gh issue list -R "$REPO" --state open --limit 500 --json number,title \
                   --jq "map(select(.title == \"${title}\")) | .[0].number // empty")
           body="Fork upstream sync failed: ${RUN_URL}. See the run summary for which fork and why."
           if [ -n "$num" ]; then
