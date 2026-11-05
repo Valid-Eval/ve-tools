@@ -30,6 +30,7 @@ cd credbridge && go build -o ../build/credbridge .
 - `fips-invariant-check/` — Go static binary run as the last step of every VE image build: one OpenSSL core per image, no embedded crypto, optional behavioural probe. Tags `fips-invariant-check/vX.Y.Z`. See its README.
 - `bin/` — kubectl plugins (`kubectl-ve-console`, `kubectl-ve-queue`, `kubectl-ve-queues`, `dockercredrot`)
 - `.github/workflows/credential-rotation-reminder.yml` — Daily credential expiry and compliance-review due-date checks → GH issues + Jira + email
+- `.github/workflows/fork-sync.yml` — Daily fast-forward-only sync of Valid-Eval's public OSS forks (activegraph, neo4j-ruby-driver) to upstream via the CI bot App; fails loudly if a fork's synced branch carries its own commits. The App has no `workflows` permission, so an upstream change to `.github/workflows/*` needs a manual "Sync fork"
 - `.github/credential-rotations.yml` — Credential inventory with expiry dates and rotation steps (credentials only)
 - `.github/compliance-reviews.yml` — Scheduled compliance reviews (e.g. exception re-reviews) with due dates, steps, and links to the ve-compliance record and Jira ticket
 - `scratch/` — Gitignored working directory for local experiments
