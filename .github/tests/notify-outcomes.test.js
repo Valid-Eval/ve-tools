@@ -333,7 +333,7 @@ async function main() {
     }],
     ['Jira payload: auth, type, priority (own or per-kind default), wiki steps, references, footer', { items: ['credential', 'review'] }, r => {
       green(r); const [jc, jr] = fetchesTo(r, 'atlassian');
-      assert.strictEqual(jc.url, 'https://valideval.atlassian.net/rest/api/2/issue');
+      assert.strictEqual(jc.url, 'https://api.atlassian.com/ex/jira/41847a68-326d-4f78-8ee9-540f646472ec/rest/api/2/issue');
       assert.strictEqual(jc.headers.Authorization, 'Basic ' + Buffer.from('dummy@example.test:dummy-jira-token').toString('base64'));
       assert.strictEqual(jc.body.fields.issuetype.name, 'Task');
       assert.strictEqual(jc.body.fields.priority.name, 'Medium');   // the item's own jira_priority, not the default
