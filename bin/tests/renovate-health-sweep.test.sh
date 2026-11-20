@@ -66,6 +66,58 @@ mk halted "There is an error with this repository's Renovate configuration. As a
 Message: \`Add missing credentials\`"
 mk haltnomsg "Action Required: Renovate will stop PRs until it is resolved."
 mk unrec "Some other renovate issue body"
+# HELD (NOTE 10): a private-registry update in Pending Status Checks. Shapes follow real
+# dashboards: a checkbox, an HTML comment naming the branch, the title, and for groups the
+# package list in parentheses on the same line.
+PENDING_HDR='## Pending Status Checks
+
+The following updates await pending status checks. To force their creation now, click on a checkbox below.
+'
+mk held_du "$DASH
+
+$PENDING_HDR
+ - [ ] <!-- unpend-branch=renovate/registry.defenseunicorns.com-valid-eval-go-fips-1.x -->chore(deps): update registry.defenseunicorns.com/valid-eval/go-fips docker tag to v1.27.4
+ - [ ] <!-- unpend-branch=renovate/bun-1.x -->chore(deps): update dependency bun to v1.4.5
+
+## Detected dependencies"
+mk held_ecr_group "$DASH
+
+$PENDING_HDR
+ - [ ] <!-- unpend-branch=renovate/com-test-ecr-base-images -->chore(deps): update com-test ecr base images (\`028695984812.dkr.ecr.us-east-1.amazonaws.com/ve-base/python\`)
+
+## Detected dependencies"
+mk pending_public "$DASH
+
+$PENDING_HDR
+ - [ ] <!-- unpend-branch=renovate/golang-1.27.4 -->chore(deps): update golang:1.27.4 docker digest to 205c763
+
+## Detected dependencies"
+mk du_elsewhere "$DASH
+
+## Awaiting Schedule
+
+ - [ ] <!-- unschedule-branch=renovate/du -->chore(deps): update registry.defenseunicorns.com/valid-eval/go-fips docker tag to v1.27.4
+
+## Detected dependencies
+
+ - \`registry.defenseunicorns.com/valid-eval/go-fips 1.27.3\`"
+mk held_fail "$DASH
+
+$PENDING_HDR
+ - [ ] <!-- unpend-branch=renovate/du -->chore(deps): update registry.defenseunicorns.com/valid-eval/go-fips docker tag to v1.27.4
+
+> [!WARNING]
+> Renovate failed to look up the following dependencies: \`Failed to look up docker package foo\`."
+mk held_prob "$DASH
+
+## Repository Problems
+
+ - WARN: getChangeLogJSON error
+
+$PENDING_HDR
+ - [ ] <!-- unpend-branch=renovate/du -->chore(deps): update registry.defenseunicorns.com/valid-eval/go-fips docker tag to v1.27.4
+
+## Detected dependencies"
 # realdash: the Dependency Dashboard of Valid-Eval/ve-tools (issue #5), captured 2026-10-07 by
 # `gh issue view 5 --json body --jq .body`; Renovate version not recorded. Refresh by re-capturing.
 mkdir -p "$FIX/realdash"; cp "$HERE/fixtures/real-dashboard.md" "$FIX/realdash/issue-1.md"
@@ -83,6 +135,7 @@ mk prob_unread "" "$(two)"; cp "$FIX/problems/issue-1.md" "$FIX/prob_unread/issu
 mk unrec_unread "" "$(two)"; cp "$FIX/unrec/issue-1.md" "$FIX/unrec_unread/issue-1.md"; echo 'HTTP 502' > "$FIX/unrec_unread/issue-2.err"
 mk onlyunread ""; echo 'HTTP 502: Bad Gateway' > "$FIX/onlyunread/issue-1.err"
 mk stale_fresh "" "$(printf '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"%s"},{"number":2,"author":{"login":"app/renovate"},"updatedAt":"%s"}]' "$OLD" "$FRESH")"; cp "$FIX/clean/issue-1.md" "$FIX/stale_fresh/issue-1.md"; cp "$FIX/clean/issue-1.md" "$FIX/stale_fresh/issue-2.md"
+mk orphan_held "" "$(printf '[{"number":1,"author":{"login":"app/renovate"},"updatedAt":"%s"},{"number":2,"author":{"login":"app/renovate"},"updatedAt":"%s"}]' "$OLD" "$FRESH")"; cp "$FIX/clean/issue-1.md" "$FIX/orphan_held/issue-1.md"; cp "$FIX/held_du/issue-1.md" "$FIX/orphan_held/issue-2.md"
 mk cfg_emptyerr "" '[]'; : > "$FIX/cfg_emptyerr/c__root.err"
 mk cfg_scopeerr "" '[]'; echo 'gh: API rate limit exceeded (HTTP 403)' > "$FIX/cfg_scopeerr/c__root.err"
 mk stale "$DASH" "[{\"number\":1,\"author\":{\"login\":\"app/renovate\"},\"updatedAt\":\"$OLD\"}]"
@@ -195,6 +248,21 @@ t 'errored updates: PROBLEMS, exit 1'              1 'PROBLEMS +: 1' '1 errored 
 t 'halt with a message: HALTED, exit 1'            1 'HALTED +: 1' 'Add missing credentials' -- --repo halted
 t 'halt without a message: HALTED, exit 1'         1 'HALTED +: 1' -- --repo haltnomsg
 t 'unrecognised Renovate issue is never clean'     1 'UNRECOGNIZED +: 1' 'CLEAN +: 0' -- --repo unrec
+# --- HELD (NOTE 10) ---------------------------------------------------------
+t 'DU update in Pending Status Checks: HELD, exit 1' 1 'HELD +: 1' 'CLEAN +: 0' 'registry.defenseunicorns.com/valid-eval/go-fips' '!bun' '!unpend-branch' -- --repo held_du
+t 'ECR group listed by package in parentheses: HELD' 1 'HELD +: 1' 'com-test ecr base images' -- --repo held_ecr_group
+t 'a public-registry pending update is not HELD'   0 'CLEAN +: 1' 'HELD +: 0' -- --repo pending_public
+t 'a DU update outside Pending Status Checks is not HELD' 0 'CLEAN +: 1' 'HELD +: 0' -- --repo du_elsewhere
+t 'HELD + lookup failures: FAILURES, held kept in the detail' 1 'FAILURES +: 1' 'HELD +: 0' 'held: chore\(deps\): update registry.defenseunicorns.com' -- --repo held_fail
+t 'HELD outranks PROBLEMS, problems kept in the detail' 1 'HELD +: 1' 'PROBLEMS +: 0' 'getChangeLogJSON' -- --repo held_prob
+t '--private-host replaces the defaults (DU no longer held)' 0 'CLEAN +: 1' 'HELD +: 0' -- --repo held_du --private-host registry.example
+t '--private-host matches a named host'            1 'HELD +: 1' 'golang:1.27.4' -- --repo pending_public --private-host golang
+t '--private-host with an empty value is a usage error' 64 'non-empty host' -- --repo clean --private-host ''
+t '--private-host with no value: exit 64'          64 'needs a value' -- --private-host
+# --- several issues: every other issue is named (NOTE 11) --------------------
+t 'orphaned stale dashboard + live HELD one: HELD is graded, the orphan is named' 1 'HELD +: 1' 'STALE +: 0' '#2 +.*\(also: #1 STALE\)' -- --repo orphan_held
+t 'a stale + fresh pair names the fresh one as CLEAN' 1 'STALE +: 1' '\(also: #2 CLEAN\)' -- --repo stale_fresh
+t 'a single-issue repo has no "also" note'          0 '!also:' -- --repo clean
 # --- staleness ------------------------------------------------------------
 t 'dashboard older than 7 days: STALE, exit 1'     1 'STALE +: 1' 'CLEAN +: 0' '17 days ago' -- --repo stale
 t 'exactly 7 days is not stale'                    0 'CLEAN +: 1' 'STALE +: 0' -- --repo edge7

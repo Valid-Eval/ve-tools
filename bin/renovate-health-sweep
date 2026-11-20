@@ -20,6 +20,7 @@
 #
 # USAGE
 #   bin/renovate-health-sweep [--org ORG] [--all | --repo NAME...] [--quiet] [--stale-days N]
+#                             [--private-host HOST...]
 #
 #   (default)      sweep repos that contain a Renovate config file
 #   --all          sweep every non-archived repo in the org; a repo that has a
@@ -29,13 +30,17 @@
 #   --quiet        suppress the per-repo detail, print the summary only
 #   --stale-days N a dashboard not updated for more than N days is STALE
 #                  (default 7; see NOTE 9 — revisit this number)
+#   --private-host HOST  a registry host that publishes no release timestamps
+#                  (repeatable; replaces the defaults registry.defenseunicorns.com
+#                  and .dkr.ecr.). An update for such a host listed under Pending
+#                  Status Checks is HELD (NOTE 10).
 #
 # EXIT CODES  (deliberately distinct — see "attempted vs achieved" below)
 #   0   read everything it attempted, and every repo is CLEAN (with --all,
 #       NO_DASHBOARD repos with no Renovate config are also allowed: most repos
 #       legitimately have no Renovate)
 #   1   read everything it attempted, and found something wrong: HALTED,
-#       FAILURES, PROBLEMS, UNRECOGNIZED, STALE, NO_DASHBOARD_CONFIGURED, or
+#       FAILURES, HELD, PROBLEMS, UNRECOGNIZED, STALE, NO_DASHBOARD_CONFIGURED, or
 #       (outside --all) NO_DASHBOARD. A repo with a definite HALTED or FAILURES
 #       issue that ALSO had an unreadable Renovate issue exits 1, not 2: the
 #       finding stands, and the detail says how many issues went unread
@@ -112,6 +117,22 @@
 #    legitimately go longer than 7 days and read STALE. 7 was chosen as a starting
 #    point, not measured. REVISIT after a few sweeps: if healthy repos show STALE,
 #    raise it (a reminder is scheduled in .github/compliance-reviews.yml).
+#
+# 10. A LOOKUP THAT WORKS CAN STILL NEVER OPEN A PR. Private registries (the DU
+#    registry, ECR) give Renovate no release timestamp. Under minimumReleaseAge
+#    with internalChecksFilter "strict", an update from one of them waits in
+#    "Pending Status Checks" for an age it can never reach, so it never becomes a
+#    PR and the dashboard shows no warning at all. Seen live: DD-Pipeline's DU
+#    updates sat there for weeks while this script, which then lacked HELD, graded
+#    the dashboard CLEAN. HELD is judged from the section alone, so a pending
+#    entry first seen minutes ago is also HELD; the fix (a no-soak rule for those
+#    hosts) is the same either way. A host that does publish timestamps must not
+#    be passed to --private-host.
+#
+# 11. A REPO CAN CARRY SEVERAL RENOVATE ISSUES (a dashboard and a halt, or an
+#    orphaned old dashboard next to the live one). The repo is graded by the
+#    worst, and the detail line lists every other issue's state, so the worst
+#    one (often a stale orphan) cannot hide what the live dashboard says.
 # ---------------------------------------------------------------------------
 
 set -u
@@ -121,6 +142,7 @@ SWEEP_ALL=0
 QUIET=0
 EXPLICIT_REPOS=""
 STALE_DAYS=7
+PRIVATE_HOSTS=""
 
 need_value() {
   if [ "$2" -lt 2 ]; then
@@ -135,6 +157,10 @@ while [ $# -gt 0 ]; do
     --all)   SWEEP_ALL=1; shift ;;
     --quiet) QUIET=1; shift ;;
     --stale-days) need_value "$1" $#; STALE_DAYS="$2"; shift 2 ;;
+    --private-host) need_value "$1" $#
+      if [ -z "$2" ]; then printf -- '--private-host needs a non-empty host\n' >&2; exit 64; fi
+      PRIVATE_HOSTS="${PRIVATE_HOSTS}$2
+"; shift 2 ;;
     --repo)  need_value "$1" $#; EXPLICIT_REPOS="${EXPLICIT_REPOS}$2
 "; shift 2 ;;
     -h|--help)
@@ -143,6 +169,12 @@ while [ $# -gt 0 ]; do
     *) printf 'unknown argument: %s (try --help)\n' "$1" >&2; exit 64 ;;
   esac
 done
+
+if [ -z "$PRIVATE_HOSTS" ]; then
+  PRIVATE_HOSTS="registry.defenseunicorns.com
+.dkr.ecr.
+"
+fi
 
 case "$STALE_DAYS" in
   ''|*[!0-9]*) printf -- '--stale-days needs a whole number of days (got %s)\n' "$STALE_DAYS" >&2; exit 64 ;;
@@ -335,6 +367,8 @@ discover_repos() {
 #   FAILURES      dashboard reports dependencies it failed to look up
 #   UNRECOGNIZED  a Renovate-authored issue that is neither a dashboard nor a
 #                 known halt — never assumed healthy
+#   HELD          an update from a --private-host registry is waiting in Pending
+#                 Status Checks, where it can never clear (NOTE 10)
 #   PROBLEMS      no lookup failures, but Repository Problems (WARN/ERROR/FATAL)
 #                 or Errored updates are listed — still needs a human
 #   STALE         a dashboard with nothing wrong that Renovate has not updated
@@ -353,13 +387,13 @@ discover_repos() {
 # FAILURES outranks it, and then the detail says how many issues went unread.
 state_rank() {
   case "$1" in
-    HALTED) echo 8 ;; FAILURES) echo 7 ;; UNREADABLE) echo 6 ;;
-    UNRECOGNIZED) echo 5 ;; PROBLEMS) echo 4 ;; STALE) echo 3 ;; CLEAN) echo 2 ;; *) echo 1 ;;
+    HALTED) echo 9 ;; FAILURES) echo 8 ;; UNREADABLE) echo 7 ;;
+    UNRECOGNIZED) echo 6 ;; HELD) echo 5 ;; PROBLEMS) echo 4 ;; STALE) echo 3 ;; CLEAN) echo 2 ;; *) echo 1 ;;
   esac
 }
 
 classify_issue() {
-  local repo="$1" num="$2" updated_at="$3" body reason failures problems errored age
+  local repo="$1" num="$2" updated_at="$3" body reason failures problems errored age held
   body=$(gh issue view "$num" --repo "${ORG}/${repo}" --json body --jq '.body' 2>"$ERRF")
   if [ $? -ne 0 ]; then
     printf 'UNREADABLE\t%s\t#%s\tgh issue view: %s\n' "$repo" "$num" "$(last_err)"
@@ -402,8 +436,23 @@ classify_issue() {
     problems="${problems:+${problems};}${errored} errored update(s)"
   fi
 
+  # NOTE 10: every Pending Status Checks bullet that names a private host. Matched as fixed
+  # strings, one host per line of PRIVATE_HOSTS.
+  held=$(printf '%s\n' "$body" \
+         | awk '/^## /{insec=($0 ~ /^## Pending Status Checks/)} insec && /^[[:space:]]*-[[:space:]]/' \
+         | grep -F -f <(printf '%s' "$PRIVATE_HOSTS" | sed '/^$/d') \
+         | sed -e 's/^[[:space:]]*-[[:space:]]*//' -e 's/^\[ \][[:space:]]*//' -e 's/<!--[^>]*-->//g' \
+         | tr '\n' ';' | sed 's/;$//')
+  # Under FAILURES the held entries ride in the detail, so they are not lost.
+  if [ -n "$held" ] && [ -n "$failures" ]; then
+    problems="${problems:+${problems};}held: ${held}"
+  fi
+
   if [ -n "$failures" ]; then
     printf 'FAILURES\t%s\t#%s\t%s%s\n' "$repo" "$num" "$failures" \
+      "$([ -n "$problems" ] && printf ' || %s' "$problems")"
+  elif [ -n "$held" ]; then
+    printf 'HELD\t%s\t#%s\t%s%s\n' "$repo" "$num" "$held" \
       "$([ -n "$problems" ] && printf ' || %s' "$problems")"
   elif [ -n "$problems" ]; then
     printf 'PROBLEMS\t%s\t#%s\t%s\n' "$repo" "$num" "$problems"
@@ -457,7 +506,7 @@ no_dashboard() {
 # Classifies every open Renovate-authored issue (a repo can carry a dashboard
 # AND a halt, or an orphaned old dashboard) and reports the most severe.
 classify_repo() {
-  local repo="$1" issues nums n num rec best best_rank rank
+  local repo="$1" issues nums n num rec best best_rank rank all_recs best_num others
   issues=$(gh issue list --repo "${ORG}/${repo}" --state open --limit "$ISSUE_LIMIT" \
              --json number,author,updatedAt 2>"$ERRF")
   if [ $? -ne 0 ]; then
@@ -491,16 +540,25 @@ classify_repo() {
     return 0
   fi
 
-  best=""; best_rank=0; n_unread_issues=0
+  best=""; best_rank=0; n_unread_issues=0; all_recs=""
   while IFS="$(printf '\t')" read -r num updated_at; do
     [ -n "$num" ] || continue
     rec=$(classify_issue "$repo" "$num" "$updated_at")
+    all_recs="${all_recs}${rec}
+"
     case "$rec" in UNREADABLE*) n_unread_issues=$((n_unread_issues + 1)) ;; esac
     rank=$(state_rank "${rec%%	*}")
     if [ "$rank" -gt "$best_rank" ]; then best="$rec"; best_rank="$rank"; fi
   done <<EOF
 $nums
 EOF
+  # NOTE 11: name every other issue's state, so the worst one cannot hide the rest. Each record
+  # is STATE<tab>repo<tab>#N<tab>detail; the graded one is skipped by its issue number.
+  best_num=$(printf '%s' "$best" | cut -f3)
+  others=$(printf '%s' "$all_recs" | awk -F'\t' -v b="$best_num" 'NF>=3 && $3!=b {printf "%s%s %s", sep, $3, $1; sep=", "}')
+  if [ -n "$others" ]; then
+    best="${best} (also: ${others})"
+  fi
   case "$best" in
     UNREADABLE*) ;;
     *) if [ "$n_unread_issues" -gt 0 ]; then
@@ -547,12 +605,13 @@ n_halt=$(count_state HALTED)
 n_fail=$(count_state FAILURES)
 n_unrec=$(count_state UNRECOGNIZED)
 n_prob=$(count_state PROBLEMS)
+n_held=$(count_state HELD)
 n_clean=$(count_state CLEAN)
 n_nodash=$(count_state NO_DASHBOARD)
 n_nodash_cfg=$(count_state NO_DASHBOARD_CONFIGURED)
 n_stale=$(count_state STALE)
 n_unread=$(count_state UNREADABLE)
-n_read=$((n_halt + n_fail + n_unrec + n_prob + n_clean + n_nodash + n_nodash_cfg + n_stale))
+n_read=$((n_halt + n_fail + n_unrec + n_held + n_prob + n_clean + n_nodash + n_nodash_cfg + n_stale))
 # Repos that carry a finding but had a Renovate issue we could not read.
 n_partial=$(printf '%s' "$results" | grep -c 'unreadable)$')
 
@@ -560,7 +619,7 @@ if [ "$QUIET" -eq 0 ]; then
   printf '\n=== Renovate health sweep — %s ===\n' "$ORG"
   printf '%s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  for state in HALTED FAILURES UNRECOGNIZED PROBLEMS STALE NO_DASHBOARD_CONFIGURED NO_DASHBOARD UNREADABLE CLEAN; do
+  for state in HALTED FAILURES UNRECOGNIZED HELD PROBLEMS STALE NO_DASHBOARD_CONFIGURED NO_DASHBOARD UNREADABLE CLEAN; do
     block=$(printf '%s' "$results" | grep "^${state}	")
     [ -n "$block" ] || continue
     printf -- '--- %s ---\n' "$state"
@@ -583,6 +642,7 @@ printf '=== findings ===\n'
 printf '  HALTED       : %s\n' "$n_halt"
 printf '  FAILURES     : %s\n' "$n_fail"
 printf '  UNRECOGNIZED : %s\n' "$n_unrec"
+printf '  HELD         : %s\n' "$n_held"
 printf '  PROBLEMS     : %s\n' "$n_prob"
 printf '  STALE        : %s\n' "$n_stale"
 printf '  NO_DASHBOARD_CONFIGURED: %s\n' "$n_nodash_cfg"
@@ -606,7 +666,7 @@ if [ "$n_unread" -gt 0 ]; then
   exit 2
 fi
 
-if [ "$n_halt" -gt 0 ] || [ "$n_fail" -gt 0 ] || [ "$n_unrec" -gt 0 ] || [ "$n_prob" -gt 0 ] \
+if [ "$n_halt" -gt 0 ] || [ "$n_fail" -gt 0 ] || [ "$n_unrec" -gt 0 ] || [ "$n_held" -gt 0 ] || [ "$n_prob" -gt 0 ] \
    || [ "$n_stale" -gt 0 ] || [ "$n_nodash_cfg" -gt 0 ]; then
   exit 1
 fi
