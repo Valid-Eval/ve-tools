@@ -1,0 +1,43 @@
+#!/bin/bash
+# Fixture `gh` for bin/tests/renovate-health-sweep.test.sh: serves only what
+# bin/renovate-health-sweep calls, from the directory in $GH_FIX.
+#   repo list                         -> $GH_REPOLIST (default $GH_FIX/repolist.json)
+#   api repos/O/R/contents[/PATH]     -> $GH_FIX/R/c_<PATH with / as _>   (root: c__root)
+#   issue list --repo O/R             -> $GH_FIX/R/issues.json
+#   issue view N --repo O/R           -> $GH_FIX/R/issue-N.md
+# A sibling file <name>.err makes that call print its contents to stderr and
+# exit 1, the way gh reports an HTTP error.
+F="$GH_FIX"
+fail() { if [ -f "$1.err" ]; then cat "$1.err" >&2; exit 1; fi; }
+case "$1" in
+  repo)
+    L="${GH_REPOLIST:-$F/repolist.json}"
+    fail "$L"; cat "$L"; exit 0 ;;
+  api)
+    p="$2"; r=$(echo "$p" | cut -d/ -f3); sub=${p#repos/*/*/contents}; sub=${sub#/}
+    [ -z "$sub" ] && sub=_root
+    k="$F/$r/c_$(echo "$sub" | tr / _)"
+    # File contents come back as metadata unless the raw media type is requested; the script
+    # depends on the raw form for package.json.
+    case "$p" in */contents/package.json) case "$*" in *'Accept: application/vnd.github.raw'*) ;; *) echo 'gh-shim: package.json fetch needs -H Accept: application/vnd.github.raw' >&2; exit 1 ;; esac ;; esac
+    fail "$k"
+    cat "$k" 2>/dev/null || { echo 'gh: Not Found (HTTP 404)' >&2; exit 1; } ;;
+  issue)
+    sub="$2"; shift 2; num=""; repo=""; json=""; jq=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --repo) repo=${2#*/}; shift 2 ;;
+        --json) json=$2; shift 2 ;;
+        --jq) jq=$2; shift 2 ;;
+        --state|--limit) shift 2 ;;
+        *) num=$1; shift ;;
+      esac
+    done
+    # Pin the field contract the script depends on, so renaming a field breaks a test.
+    if [ "$sub" = list ]; then
+      case "$json" in *number*author*updatedAt*|*number*updatedAt*author*) ;; *) echo "gh-shim: issue list needs --json number,author,updatedAt (got '$json')" >&2; exit 1 ;; esac
+      fail "$F/$repo/issues"; cat "$F/$repo/issues.json"; exit 0
+    fi
+    if [ "$json" != body ] || [ "$jq" != .body ]; then echo "gh-shim: issue view needs --json body --jq .body (got '$json' '$jq')" >&2; exit 1; fi
+    fail "$F/$repo/issue-$num"; cat "$F/$repo/issue-$num.md" ;;
+esac
