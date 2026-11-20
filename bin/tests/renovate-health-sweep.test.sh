@@ -101,6 +101,19 @@ mk du_elsewhere "$DASH
 ## Detected dependencies
 
  - \`registry.defenseunicorns.com/valid-eval/go-fips 1.27.3\`"
+mk held_case "$DASH
+
+$PENDING_HDR
+ * [ ] <!-- unpend-branch=renovate/du -->chore(deps): update Registry.DefenseUnicorns.com/valid-eval/go-fips docker tag to v1.27.4
+
+## Detected dependencies"
+mk pending_h3 "$DASH
+
+### Pending Status Checks
+
+ - [ ] <!-- unpend-branch=renovate/du -->chore(deps): update registry.defenseunicorns.com/valid-eval/go-fips docker tag to v1.27.4
+
+## Detected dependencies"
 mk held_fail "$DASH
 
 $PENDING_HDR
@@ -255,10 +268,17 @@ t 'a public-registry pending update is not HELD'   0 'CLEAN +: 1' 'HELD +: 0' --
 t 'a DU update outside Pending Status Checks is not HELD' 0 'CLEAN +: 1' 'HELD +: 0' -- --repo du_elsewhere
 t 'HELD + lookup failures: FAILURES, held kept in the detail' 1 'FAILURES +: 1' 'HELD +: 0' 'held: chore\(deps\): update registry.defenseunicorns.com' -- --repo held_fail
 t 'HELD outranks PROBLEMS, problems kept in the detail' 1 'HELD +: 1' 'PROBLEMS +: 0' 'getChangeLogJSON' -- --repo held_prob
+t 'host match is case-insensitive and takes a * bullet' 1 'HELD +: 1' -- --repo held_case
+t 'Pending Status Checks in another format is a finding, not CLEAN' 1 'PROBLEMS +: 1' 'CLEAN +: 0' 'unrecognised format' -- --repo pending_h3
 t '--private-host replaces the defaults (DU no longer held)' 0 'CLEAN +: 1' 'HELD +: 0' -- --repo held_du --private-host registry.example
 t '--private-host matches a named host'            1 'HELD +: 1' 'golang:1.27.4' -- --repo pending_public --private-host golang
 t '--private-host with an empty value is a usage error' 64 'non-empty host' -- --repo clean --private-host ''
 t '--private-host with no value: exit 64'          64 'needs a value' -- --private-host
+BADGREP="$WORK/badgrep"; mkdir -p "$BADGREP"
+printf '#!/bin/bash\nfor a in "$@"; do [ "$a" = "-f" ] && { echo "grep: cannot read patterns" >&2; exit 2; }; done\nexec %s "$@"\n' "$(command -v grep)" > "$BADGREP/grep"; chmod +x "$BADGREP/grep"
+out=$(GH_FIX="$FIX" PATH="$BADGREP:$BIN:$PATH" RENOVATE_SWEEP_NOW="$NOW" run_limited "$CASE_TIMEOUT" /bin/bash "$SWEEP" --repo held_du); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'private-host filter failed' && ! printf '%s' "$out" | grep -qE 'CLEAN +: 1'; then PASS=$((PASS + 1)); echo 'PASS  a failing private-host grep is UNREADABLE, not CLEAN'
+else FAIL=$((FAIL + 1)); echo "FAIL  a failing private-host grep should be UNREADABLE exit 2 (got $rc)"; printf '%s\n' "$out" | sed 's/^/        /'; fi
 # --- several issues: every other issue is named (NOTE 11) --------------------
 t 'orphaned stale dashboard + live HELD one: HELD is graded, the orphan is named' 1 'HELD +: 1' 'STALE +: 0' '#2 +.*\(also: #1 STALE\)' -- --repo orphan_held
 t 'a stale + fresh pair names the fresh one as CLEAN' 1 'STALE +: 1' '\(also: #2 CLEAN\)' -- --repo stale_fresh

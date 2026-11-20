@@ -202,6 +202,13 @@ done
 TMPD=$(mktemp -d 2>/dev/null) || { printf 'FATAL: mktemp failed\n' >&2; exit 2; }
 trap 'rm -rf "$TMPD"' EXIT
 ERRF="$TMPD/gh.err"
+# One private host per line, for grep -F -f (NOTE 10). A file, not process substitution, so a
+# failure to read it is visible in grep's exit status.
+HOSTS_FILE="$TMPD/private-hosts"
+if ! printf '%s' "$PRIVATE_HOSTS" | sed '/^$/d' > "$HOSTS_FILE" || [ ! -s "$HOSTS_FILE" ]; then
+  printf 'FATAL: could not write the private-host list\n' >&2
+  exit 2
+fi
 # RENOVATE_SWEEP_NOW (epoch seconds) is a test hook so staleness can be pinned.
 NOW_EPOCH="${RENOVATE_SWEEP_NOW:-$(date +%s)}"
 if [ -n "${RENOVATE_SWEEP_NOW:-}" ]; then
@@ -393,7 +400,7 @@ state_rank() {
 }
 
 classify_issue() {
-  local repo="$1" num="$2" updated_at="$3" body reason failures problems errored age held
+  local repo="$1" num="$2" updated_at="$3" body reason failures problems errored age held held_raw pending
   body=$(gh issue view "$num" --repo "${ORG}/${repo}" --json body --jq '.body' 2>"$ERRF")
   if [ $? -ne 0 ]; then
     printf 'UNREADABLE\t%s\t#%s\tgh issue view: %s\n' "$repo" "$num" "$(last_err)"
@@ -438,11 +445,24 @@ classify_issue() {
 
   # NOTE 10: every Pending Status Checks bullet that names a private host. Matched as fixed
   # strings, one host per line of PRIVATE_HOSTS.
-  held=$(printf '%s\n' "$body" \
-         | awk '/^## /{insec=($0 ~ /^## Pending Status Checks/)} insec && /^[[:space:]]*-[[:space:]]/' \
-         | grep -F -f <(printf '%s' "$PRIVATE_HOSTS" | sed '/^$/d') \
-         | sed -e 's/^[[:space:]]*-[[:space:]]*//' -e 's/^\[ \][[:space:]]*//' -e 's/<!--[^>]*-->//g' \
+  # Hosts match case-insensitively. grep exits 1 for "no match" (the normal case); exit 2 means
+  # it could not run, which is "could not tell", never CLEAN (NOTE 6).
+  pending=$(printf '%s\n' "$body" \
+            | awk '/^## /{insec=($0 ~ /^## Pending Status Checks/)} insec && /^[[:space:]]*[-*][[:space:]]/')
+  held_raw=$(printf '%s\n' "$pending" | grep -i -F -f "$HOSTS_FILE" 2>"$ERRF")
+  if [ $? -gt 1 ]; then
+    printf 'UNREADABLE\t%s\t#%s\tprivate-host filter failed: %s\n' "$repo" "$num" "$(last_err)"
+    return 0
+  fi
+  held=$(printf '%s\n' "$held_raw" | sed '/^$/d' \
+         | sed -e 's/^[[:space:]]*[-*][[:space:]]*//' -e 's/^\[ \][[:space:]]*//' -e 's/<!--[^>]*-->//g' \
          | tr '\n' ';' | sed 's/;$//')
+  # The section named in some other form than the "## " heading parsed above: we cannot tell what
+  # it holds, so it is a finding, not CLEAN.
+  if printf '%s' "$body" | grep -q 'Pending Status Checks' \
+     && ! printf '%s\n' "$body" | grep -q '^## Pending Status Checks'; then
+    problems="${problems:+${problems};}Pending Status Checks section in an unrecognised format (HELD not checked)"
+  fi
   # Under FAILURES the held entries ride in the detail, so they are not lost.
   if [ -n "$held" ] && [ -n "$failures" ]; then
     problems="${problems:+${problems};}held: ${held}"
