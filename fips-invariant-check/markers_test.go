@@ -12,15 +12,16 @@ import (
 	"testing"
 )
 
-// The marker patterns as of v0.5.1, when scanBytes ran each as one alternation. Copied here as
-// literals, not read from the package vars, so a change to those vars cannot also change the
-// reference they are checked against.
+// The marker patterns run as one alternation each, as scanBytes did up to v0.5.1 (the source
+// pattern has since gained AWS-LC's nested crypto/fipsmodule/<area>/ sources and hyphenated file
+// names). Copied here as literals, not read from the package vars, so a change to those vars cannot
+// also change the reference they are checked against.
 var (
 	oracleLibMarker    = regexp.MustCompile(`OpenSSL [0-9]+\.[0-9]+\.[0-9]+|BoringSSL|AWS-LC|LibreSSL [0-9]|aws-lc/crypto/fipsmodule`)
-	oracleSourceMarker = regexp.MustCompile(`crypto/(evp|rand|fipsmodule|sha|bn|ec)/[a-z0-9_]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
+	oracleSourceMarker = regexp.MustCompile(`crypto/(evp|rand|sha|bn|ec)/[a-z0-9_-]+\.(c|cc)|crypto/fipsmodule/([a-z0-9_]+/)?[a-z0-9_-]+\.(c|cc)|ssl/(ssl_lib|s3_lib|t1_lib|ssl_cert)\.(c|cc)|third_party/boringssl/`)
 )
 
-// oracleScanBytes is scanBytes as of v0.5.1.
+// oracleScanBytes is scanBytes as of v0.5.1, one alternation per pattern.
 func oracleScanBytes(r io.Reader, chunk, overlap int) (byteFacts, error) {
 	facts := byteFacts{markers: map[string]bool{}}
 	buf := make([]byte, 0, chunk+overlap)
@@ -77,7 +78,7 @@ var oracleSeeds = []string{
 	"OpenSSL 3.6.4", "BoringSSL", "AWS-LC", "LibreSSL 3", "aws-lc/crypto/fipsmodule",
 	// 0 and 9 in every digit position, so a narrowed digit class ([1-9], [0-8]) is caught
 	"OpenSSL 0.9.8", "OpenSSL 9.0.0", "LibreSSL 0", "LibreSSL 9.0",
-	"crypto/evp/digest.c", "crypto/sha/sha256.cc", "ssl/ssl_lib.c", "ssl/s3_lib.cc", "ssl/t1_lib.c", "ssl/ssl_cert.c",
+	"crypto/evp/digest.c", "crypto/sha/sha256.cc", "crypto/fipsmodule/bn/add.c", "crypto/fipsmodule/ec/ec_key.cc.inc", "crypto/fipsmodule/rsa/rsa_impl.c", "crypto/fipsmodule/ec/p256-nistz.c", "crypto/ec/ecp_nistz256-x.c", "ssl/ssl_lib.c", "ssl/s3_lib.cc", "ssl/t1_lib.c", "ssl/ssl_cert.c",
 	"third_party/boringssl/src/crypto/x.c",
 	// overlaps and repeats
 	"BoringSSLibreSSL 3", "OpenSSL 1.2.3OpenSSL 4.5.6", "AWS-LCaws-lc/crypto/fipsmodule", "aws-lc/crypto/fipsmodule/bcm.c",
@@ -145,7 +146,12 @@ func TestMarkerBranches(t *testing.T) {
 		}
 	}
 	source := map[string][]string{ // one entry per source branch, every inner arm
-		"crypto/":                {"crypto/evp/digest.c", "crypto/rand/rand_lib.c", "crypto/fipsmodule/bcm.cc", "crypto/sha/sha256.c", "crypto/bn/bn_lib.c", "crypto/ec/ec_key.cc"},
+		"crypto/": {"crypto/evp/digest.c", "crypto/rand/rand_lib.c", "crypto/fipsmodule/bcm.cc", "crypto/sha/sha256.c", "crypto/bn/bn_lib.c", "crypto/ec/ec_key.cc",
+			// AWS-LC / BoringSSL nest their FIPS sources one level down
+			"crypto/fipsmodule/bn/add.c", "crypto/fipsmodule/ec/ec_key.cc.inc", "crypto/fipsmodule/evp/digest.c", "crypto/fipsmodule/rand/rand.c", "crypto/fipsmodule/sha/sha256.c",
+			// any area under crypto/fipsmodule/, and hyphenated file names (aws-cli-2 2.38.4-r0's awscrt)
+			"crypto/fipsmodule/rsa/rsa_impl.c", "crypto/fipsmodule/cipher/e_aes.c", "crypto/fipsmodule/hmac/hmac.c", "crypto/fipsmodule/ecdsa/ecdsa.c",
+			"crypto/fipsmodule/kem/kem.c", "crypto/fipsmodule/curve25519/curve25519.c", "crypto/fipsmodule/ec/p256-nistz.c", "crypto/ec/ecp_nistz256-x.c"},
 		"ssl/":                   {"ssl/ssl_lib.c", "ssl/s3_lib.cc", "ssl/t1_lib.c", "ssl/ssl_cert.cc"},
 		"third_party/boringssl/": {"third_party/boringssl/"},
 	}
@@ -160,7 +166,7 @@ func TestMarkerBranches(t *testing.T) {
 		t.Errorf("branches: %d lib, %d source; this table covers %d lib, %d source: add a row for the new branch",
 			len(cryptoLibMarkerParts), len(cryptoSourceMarkerParts), len(lib), len(source))
 	}
-	for _, text := range []string{"OpenSSL: %s", "OpenSSL 3.", "LibreSSL x", "aws-lc/crypto/", "crypto/evp/.c", "ssl/ssl_libc", "SHA256_BLK"} {
+	for _, text := range []string{"OpenSSL: %s", "OpenSSL 3.", "LibreSSL x", "aws-lc/crypto/", "crypto/evp/.c", "ssl/ssl_libc", "SHA256_BLK", "crypto/fipsmodule/bn/.c", "crypto/fipsmodule//a.c", "crypto/fipsmodule/bn/add.h", "crypto/x509/a_sign.c"} {
 		got := map[string]bool{}
 		addLibMarkers([]byte(text), got)
 		if len(got) > 0 || hasSourceMarker([]byte(text)) {
