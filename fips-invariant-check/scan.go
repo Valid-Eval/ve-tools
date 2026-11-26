@@ -409,7 +409,7 @@ type fileReport struct {
 	Markers        []string // crypto-library version markers found in the bytes
 	HasSource      bool     // the bytes also carry the library's own source paths (compiled-in copy)
 	IsGo           bool
-	GoFIPS         bool     // built on one of the two accepted routes (see goFIPSMode)
+	GoFIPS         bool     // built on one of the accepted routes (see goFIPSMode)
 	GoCrypto       bool     // Go binary with any crypto compiled in (standard library, x/crypto, or GoUnvalidated)
 	GoUnvalidated  []string // non-standard-library packages whose own crypto it links (outside both modules); implies GoCrypto
 	GoBuildNote    string   // the settings that decided GoFIPS, for the report
@@ -871,8 +871,9 @@ func scanBytes(r io.Reader, chunk, overlap int) (byteFacts, error) {
 // build the UNVALIDATED in-tree module.
 var validatedGoFIPS140 = regexp.MustCompile(`^v1\.0\.[0-9]+-`)
 
-// goFIPSMode accepts exactly the two routes ruled valid on 2026-10-02 (INF-377), matched against
-// real `go version -m` output from DU and upstream toolchains:
+// goFIPSMode accepts exactly three routes, matched against real `go version -m` output from DU and
+// upstream toolchains. (A) and (B) were ruled valid on 2026-10-02 (INF-377); (C) on 2026-11-25
+// (INF-471), because it chooses at run time between those two validated modules:
 //
 //	(A) Native Go Cryptographic Module (CMVP #5247), Chainguard build (DU go-fips >= 1.27):
 //	    GOFIPS140 is a certified snapshot, fips140 is on by default, AND
@@ -884,6 +885,15 @@ var validatedGoFIPS140 = regexp.MustCompile(`^v1\.0\.[0-9]+-`)
 //	    -tags requirefips AND GOEXPERIMENT systemcrypto AND CGO_ENABLED=1. Crypto goes through
 //	    libcrypto -> the Chainguard FIPS provider (#5132); the binary refuses to start without
 //	    it. It reports GOFIPS140=latest, so (B) must not be judged by GOFIPS140.
+//	(C) Chainguard's run-time choice between (B)'s OpenSSL provider and (A)'s native module (DU
+//	    go-msft-1.27 toolchain, as in DU keda-fips 2.21.0): GOFIPS140 is a certified snapshot,
+//	    fips140 is on by default, microsoft_systemcrypto=1, AND chainguard_cryptographic_module and
+//	    chainguard_entropy_source are both exactly openssl+geomys, AND any cgr_fips in
+//	    DefaultGODEBUG is one of openssl+geomys, openssl or geomys. With the default
+//	    (openssl+geomys) the binary uses the OpenSSL FIPS provider and, if that is not available,
+//	    falls back to the native module without failing; GODEBUG=cgr_fips=openssl makes it refuse
+//	    to start instead, and cgr_fips=geomys uses only the native module. That run-time choice is
+//	    set by the deployment and is not visible here, any more than a run-time fips140=off is.
 //
 // The chainguard_* lines are the toolchain's self-declared build settings, not proof, and a
 // runtime GODEBUG=fips140=off would switch FIPS mode off in a route (A) binary; neither is
@@ -895,7 +905,7 @@ func goFIPSMode(bi *buildinfo.BuildInfo) (bool, string) {
 		settings[s.Key] = s.Value
 		switch s.Key {
 		case "GOFIPS140", "DefaultGODEBUG", "-tags", "GOEXPERIMENT", "CGO_ENABLED",
-			"chainguard_cryptographic_module", "chainguard_entropy_source":
+			"chainguard_cryptographic_module", "chainguard_entropy_source", "microsoft_systemcrypto":
 			notes = append(notes, s.Key+"="+s.Value)
 		}
 	}
@@ -905,7 +915,26 @@ func goFIPSMode(bi *buildinfo.BuildInfo) (bool, string) {
 		settings["chainguard_cryptographic_module"] == "geomys" &&
 		settings["chainguard_entropy_source"] == "geomys"
 	viaOpenSSL := has("-tags", "requirefips") && has("GOEXPERIMENT", "systemcrypto") && settings["CGO_ENABLED"] == "1"
-	return native || viaOpenSSL, strings.Join(notes, " ")
+	choice := validatedGoFIPS140.MatchString(settings["GOFIPS140"]) &&
+		(has("DefaultGODEBUG", "fips140=on") || has("DefaultGODEBUG", "fips140=only")) &&
+		settings["microsoft_systemcrypto"] == "1" &&
+		settings["chainguard_cryptographic_module"] == "openssl+geomys" &&
+		settings["chainguard_entropy_source"] == "openssl+geomys" &&
+		cgrFIPSValidated(settings["DefaultGODEBUG"])
+	return native || viaOpenSSL || choice, strings.Join(notes, " ")
+}
+
+// cgrFIPSValidated reports whether every cgr_fips item in a DefaultGODEBUG value names only the
+// validated modules (route C). No cgr_fips item at all is accepted: the toolchain's default is
+// openssl+geomys, which route C's chainguard_cryptographic_module check already requires.
+func cgrFIPSValidated(godebug string) bool {
+	for _, item := range strings.Split(godebug, ",") {
+		v, ok := strings.CutPrefix(item, "cgr_fips=")
+		if ok && v != "openssl+geomys" && v != "openssl" && v != "geomys" {
+			return false
+		}
+	}
+	return true
 }
 
 func inDir(p string, dirs []string) bool {
@@ -952,7 +981,7 @@ func embeddedReason(r *fileReport) string {
 		return "Go binary built on a validated module but also running crypto code from outside the standard library (" + strings.Join(r.GoUnvalidated, ", ") + "); FIPS mode does not govern it"
 	}
 	if r.IsGo && (r.GoCrypto || len(r.GoUnvalidated) > 0) && !r.GoFIPS {
-		return "Go binary whose crypto is not a validated FIPS module: needs the Chainguard native Go module build (certified GOFIPS140 snapshot + fips140=on + chainguard geomys module/entropy; CMVP #5247) or the system-OpenSSL route (requirefips + systemcrypto + CGO); has " + r.GoBuildNote
+		return "Go binary whose crypto is not a validated FIPS module: needs the Chainguard native Go module build (certified GOFIPS140 snapshot + fips140=on + chainguard geomys module/entropy; CMVP #5247), the system-OpenSSL route (requirefips + systemcrypto + CGO), or the Chainguard openssl+geomys choice build (certified GOFIPS140 snapshot + fips140=on + microsoft_systemcrypto + chainguard openssl+geomys module/entropy); has " + r.GoBuildNote
 	}
 	return ""
 }

@@ -10,7 +10,7 @@
 //     that statically links OpenSSL/BoringSSL/AWS-LC, a vendored libcrypto, Mozilla NSS, Heimdal
 //     and other independent stacks). Those never touch the FIPS provider and do not fail: they
 //     silently run non-validated crypto. Go binaries are the one sanctioned second module, on the
-//     two routes ruled valid on 2026-10-02 (INF-377); see goFIPSMode in scan.go.
+//     routes ruled valid on 2026-10-02 (INF-377) and 2026-11-25 (INF-471); see goFIPSMode in scan.go.
 //
 // A gate that passes what it never looked at is worse than no gate, so anything the scan cannot
 // inspect (an unreadable directory or file, a Go binary whose build info cannot be parsed, a root

@@ -94,6 +94,13 @@ func TestGoFIPSMode(t *testing.T) {
 	upV100 := []string{"-tags", "fips140v1.0", "DefaultGODEBUG", "fips140=on", "CGO_ENABLED", "0", "GOFIPS140", "v1.0.0-c2097c7c"}
 	cg126 := []string{"microsoft_systemcrypto", "1", "microsoft_toolset_version", "go1.26.8-microsoft", "-tags", "requirefips",
 		"DefaultGODEBUG", "fips140=on", "CGO_ENABLED", "1", "GOEXPERIMENT", "systemcrypto", "GOFIPS140", "latest"}
+	// DU keda-fips 2.21.0 (go-msft-1.27 toolchain), `go version -m /usr/bin/keda`, 2026-11-25 (INF-471).
+	cgmsft127 := []string{"chainguard_go_package", "go-msft-1.27-1.27.4.1-r0",
+		"chainguard_cryptographic_module", "openssl+geomys", "chainguard_entropy_source", "openssl+geomys",
+		"microsoft_systemcrypto", "1", "microsoft_toolset_version", "go1.27.4-microsoft",
+		"-tags", "netgo,osusergo,fips140v1.0",
+		"DefaultGODEBUG", "cgr_fips=openssl+geomys,cgr_verbose=0,fips140=on,fips140ems=0,tracebacklabels=0,x509sslcertoverrideplatform=0",
+		"CGO_ENABLED", "1", "GOFIPS140", "v1.0.0-c2097c7c"}
 	with := func(base []string, kv ...string) []string {
 		out := append([]string{}, base...)
 		for i := 0; i < len(kv); i += 2 {
@@ -128,6 +135,23 @@ func TestGoFIPSMode(t *testing.T) {
 		{"upstream v1.0.0 even with chainguard markers", with(cg127, "GOFIPS140", "v1.0.0"), false},
 		{"-tags norequirefips", with(cg126, "-tags", "norequirefips"), false},
 		{"requirefips without systemcrypto", with(cg126, "GOEXPERIMENT", ""), false},
+		{"DU go-msft 1.27 openssl+geomys choice (keda-fips)", cgmsft127, true},
+		{"choice build with fips140=only", with(cgmsft127, "DefaultGODEBUG", "cgr_fips=openssl+geomys,fips140=only"), true},
+		{"choice build defaulting to cgr_fips=openssl", with(cgmsft127, "DefaultGODEBUG", "cgr_fips=openssl,fips140=on"), true},
+		{"choice build defaulting to cgr_fips=geomys", with(cgmsft127, "DefaultGODEBUG", "cgr_fips=geomys,fips140=on"), true},
+		{"choice build with no cgr_fips item", with(cgmsft127, "DefaultGODEBUG", "fips140=on"), true},
+		{"choice build but fips140 off", with(cgmsft127, "DefaultGODEBUG", "cgr_fips=openssl+geomys,fips140=off"), false},
+		{"choice build but no fips140 item", with(cgmsft127, "DefaultGODEBUG", "cgr_fips=openssl+geomys"), false},
+		{"choice build but GOFIPS140=latest", with(cgmsft127, "GOFIPS140", "latest"), false},
+		{"choice build but upstream GOFIPS140=v1.0.0", with(cgmsft127, "GOFIPS140", "v1.0.0"), false},
+		{"choice build without microsoft_systemcrypto", with(cgmsft127, "microsoft_systemcrypto", "0"), false},
+		{"choice build but module openssl only", with(cgmsft127, "chainguard_cryptographic_module", "openssl"), false},
+		{"choice build but entropy kernel", with(cgmsft127, "chainguard_entropy_source", "kernel"), false},
+		{"choice build but entropy geomys+kernel", with(cgmsft127, "chainguard_entropy_source", "geomys+kernel"), false},
+		{"choice build with unknown cgr_fips default", with(cgmsft127, "DefaultGODEBUG", "cgr_fips=boringcrypto,fips140=on"), false},
+		{"choice build with second cgr_fips item unknown", with(cgmsft127, "DefaultGODEBUG", "cgr_fips=openssl+geomys,cgr_fips=none,fips140=on"), false},
+		{"choice markers on upstream golang (no microsoft toolset)", []string{"chainguard_cryptographic_module", "openssl+geomys",
+			"chainguard_entropy_source", "openssl+geomys", "DefaultGODEBUG", "fips140=on", "GOFIPS140", "v1.0.0-c2097c7c"}, false},
 		{"plain golang (comment-dedup today)", []string{"CGO_ENABLED", "0"}, false},
 		{"boringcrypto", []string{"GOEXPERIMENT", "boringcrypto", "CGO_ENABLED", "1"}, false},
 	}
